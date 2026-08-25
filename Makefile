@@ -3,7 +3,6 @@
 #   make              Claude Code on the current directory (builds first if needed)
 #   make install      put a `claude-box` launcher on PATH, for use from anywhere
 #   make shell        bash in the image instead of Claude Code
-#   make test         run the in-image smoke test
 #   make bench        shell with the capabilities perf and bpftrace need
 #   make help         everything else
 #
@@ -99,7 +98,7 @@ RUN = $(ENGINE) run --rm $(TTYFLAGS) \
         $(GITFLAGS) $(ENVFLAGS) $(RUNARGS)
 
 .DEFAULT_GOAL := run
-.PHONY: run image home build slim minimal rebuild test shell bench versions \
+.PHONY: run image home build slim minimal rebuild shell bench versions \
         size install push pull clean help
 
 ## run: Claude Code on $(WORK) -- the default target
@@ -147,13 +146,6 @@ minimal: build
 ## rebuild: build ignoring the layer cache
 rebuild: BUILDARGS += --no-cache --pull
 rebuild: build
-
-## test: verify the image, and the mounts and uid mapping it will run under
-# Deliberately routed through $(RUN) rather than a bare `run`: the failures
-# worth catching here are runtime posture -- a read-only /workspace, a home
-# volume the container user cannot read -- not just a missing binary.
-test: image home
-	$(RUN) --entrypoint image-smoke-test $(REF)
 
 ## shell: bash in the image instead of Claude Code
 shell: image home

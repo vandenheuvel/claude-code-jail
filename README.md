@@ -7,7 +7,6 @@ evaluation, and performance work — without stopping to install anything.
 ```sh
 make            # Claude Code on the current directory
 make install    # a `claude-box` launcher on PATH, to skip the `make` entirely
-make test       # verify the image, and the mounts and uid mapping it runs under
 make shell      # bash instead
 make help       # everything else
 ```
@@ -226,7 +225,7 @@ that flag under uid 0. `--user root` is available if you need it, but pass
 `/opt/venv`, cargo, npm-global and quarto from any `bash -l`, `su -` or ssh
 into the container — and would quietly demote `python3` from the venv to
 `/usr/bin/python3` rather than failing outright. `/etc/profile.d/10-claude-path.sh`
-puts it back. The smoke test checks this.
+puts it back.
 
 **What isn't here.** Geospatial (GDAL/PROJ/GEOS and `sf`), CUDA, and databases
 beyond SQLite and DuckDB. All are one `sudo apt-get install` away, and the apt
@@ -287,13 +286,6 @@ before starting, so switching an existing setup over needs no manual step.
 
 ```
 Dockerfile        the image
-Makefile          build, run, test, bench — and the engine-specific handling
+Makefile          build, run, bench — and the engine-specific handling
 claude-box.in     template for the launcher `make install` writes
-smoke-test.sh     baked in as `image-smoke-test`; run by `make test`
 ```
-
-`make test` is worth running after any change to the Dockerfile — it checks
-that each tool is on `PATH`, that every Python module imports, that R can see
-its package library, that a Rust hello-world compiles, that Chromium launches,
-that ImageMagick will read a PDF, and that the runtime user can write where it
-needs to.

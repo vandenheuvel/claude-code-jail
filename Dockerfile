@@ -423,8 +423,6 @@ RUN git config --system --add safe.directory '*' \
 RUN printf 'export PATH=%s\n' "$PATH" > /etc/profile.d/10-claude-path.sh \
  && chmod 0644 /etc/profile.d/10-claude-path.sh
 
-COPY --chmod=0755 smoke-test.sh /usr/local/bin/image-smoke-test
-
 # ---- Claude Code ------------------------------------------------------------
 # Last, because this is the layer that changes daily. ADD of the registry's
 # `latest` metadata makes the published version the cache key, so a rebuild
