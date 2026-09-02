@@ -39,6 +39,17 @@ mounts `~/.gitconfig` read-only so commits are attributed, forwards
 `--shm-size=1g` — Docker's 64 MB default is where headless Chromium starts
 crashing on real pages, in ways that don't name the cause.
 
+Every run also checks for a newer Claude Code first. The install sits in the
+last Dockerfile layer, keyed on the npm registry's `latest` metadata, so the
+check is a cache hit down the whole file and costs a registry round trip;
+when a release has landed, that one npm layer rebuilds and nothing else does.
+`make update` runs the check on its own, `make UPDATE=0` skips it for one run,
+and `make UPDATE_AGE=720` checks at most twice a day. A check that fails —
+no network, registry down — warns and starts the image that is already there.
+Newer apt packages and a newer base image are a different question: those live
+in cached layers the check deliberately keeps, and `make rebuild` is what
+refreshes them.
+
 Base is `node:26-trixie-slim` (Debian 13), building for `linux/amd64` and
 `linux/arm64`; see [Architecture notes](#architecture-notes) for the two things
 that differ.

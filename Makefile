@@ -4,6 +4,7 @@
 #   make install      put a `claude-box` launcher on PATH, for use from anywhere
 #   make shell        bash in the image instead of Claude Code
 #   make bench        shell with the capabilities perf and bpftrace need
+#   make update       refresh Claude Code (also checked before every run)
 #   make help         everything else
 #
 # There is nothing to configure before the first run. The engine is detected,
@@ -79,6 +80,17 @@ ENVFLAGS = $(foreach v,$(ENVPASS),$(if $($(v)),-e $(v)))
 # on an unset user.email.
 GITFLAGS := $(if $(wildcard $(HOME)/.gitconfig),-v $(HOME)/.gitconfig:/home/claude/.gitconfig:ro)
 
+# Start-up update check. The Dockerfile ends with an ADD of the registry's
+# `latest` metadata for Claude Code, so the published version is that layer's
+# cache key: re-running the build is a cache hit all the way down until a new
+# release appears, and only then does one npm layer rebuild. Nothing in the
+# toolchain is compiled again. UPDATE=0 skips the check for a single run;
+# UPDATE_AGE=N checks at most once every N minutes, remembered in a stamp file.
+UPDATE     ?= 1
+UPDATE_AGE ?= 0
+STAMPDIR   ?= $(HOME)/.cache/claude-box
+STAMP      := $(STAMPDIR)/updated-$(subst :,_,$(subst /,_,$(REF)))
+
 BUILDARGS ?=
 BUILD = DOCKER_BUILDKIT=1 $(ENGINE) build $(FORMAT) \
           --build-arg USER_UID=$(BUILD_UID) --build-arg USER_GID=$(BUILD_GID) \
@@ -98,11 +110,11 @@ RUN = $(ENGINE) run --rm $(TTYFLAGS) \
         $(GITFLAGS) $(ENVFLAGS) $(RUNARGS)
 
 .DEFAULT_GOAL := run
-.PHONY: run image home build slim minimal rebuild shell bench versions \
-        size install push pull clean help
+.PHONY: run image home update check-update build slim minimal rebuild shell \
+        bench versions size install push pull clean help
 
 ## run: Claude Code on $(WORK) -- the default target
-run: image home
+run: check-update home
 	$(RUN) $(REF) $(ARGS)
 
 # Build only when the image is absent, so the first `make` is self-contained
@@ -111,6 +123,26 @@ image:
 	@$(ENGINE) image inspect $(REF) >/dev/null 2>&1 || { \
 	  echo "==> $(REF) not found; building it once (this takes a while)"; \
 	  $(MAKE) -f $(THIS) build; }
+
+## update: pull a newer Claude Code into the image -- no full rebuild
+update:
+	$(MAKE) -f $(THIS) build
+
+# The same check, quiet and throttled, in front of every session. It must never
+# be the reason the container will not start: a flight with no network, or a
+# registry hiccup, warns and runs the image that is already here.
+check-update: image
+ifneq ($(UPDATE),0)
+	@if [ "$(UPDATE_AGE)" -gt 0 ] 2>/dev/null \
+	   && [ -n "$$(find '$(STAMP)' -newermt '-$(UPDATE_AGE) minutes' 2>/dev/null)" ]; then :; else \
+	  echo "==> checking for a newer Claude Code (a moment, longer if there is one)"; \
+	  if $(MAKE) -s -f $(THIS) build BUILDARGS=--quiet >/dev/null; then \
+	    mkdir -p '$(STAMPDIR)' && touch '$(STAMP)'; \
+	  else \
+	    echo "==> update check failed; starting the image as it is"; \
+	  fi; \
+	fi
+endif
 
 # The named volume holding /home/claude. Under keep-id the container's uid 1000
 # is the host account, so the volume's contents must be owned by it. podman
@@ -148,7 +180,7 @@ rebuild: BUILDARGS += --no-cache --pull
 rebuild: build
 
 ## shell: bash in the image instead of Claude Code
-shell: image home
+shell: check-update home
 	$(RUN) --entrypoint bash $(REF) $(ARGS)
 
 ## bench: shell with the capabilities perf, bpftrace and heaptrack need
@@ -210,9 +242,12 @@ help:
 	@echo
 	@echo "Engine:    $(ENGINE)$(if $(IS_PODMAN), (rootless podman: keep-id + --format docker))"
 	@echo "Variables: IMAGE=$(IMAGE) WORK=$(WORK) HOMEVOL=$(HOMEVOL) BINDIR=$(BINDIR)"
+	@echo "           UPDATE=$(UPDATE) UPDATE_AGE=$(UPDATE_AGE) (start-up update check)"
 	@echo
 	@echo "Examples:"
 	@echo "  make                                  Claude Code on the current directory"
 	@echo "  make ARGS='--dangerously-skip-permissions'"
 	@echo "  make WORK=~/src/myproject"
+	@echo "  make UPDATE=0                         start now, skip the update check"
+	@echo "  make UPDATE_AGE=720                   check at most twice a day"
 	@echo "  make build BUILDARGS='--build-arg WITH_TORCH=1'"
