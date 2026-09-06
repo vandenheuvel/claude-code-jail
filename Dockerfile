@@ -427,9 +427,20 @@ RUN printf 'export PATH=%s\n' "$PATH" > /etc/profile.d/10-claude-path.sh \
 # Last, because this is the layer that changes daily. ADD of the registry's
 # `latest` metadata makes the published version the cache key, so a rebuild
 # picks up a new release instead of silently serving a stale one.
+#
+# --allow-scripts names the one package whose postinstall this image genuinely
+# depends on: it replaces bin/claude.exe with the native binary for the
+# platform. npm 11.19 still runs unreviewed install scripts and only warns
+# about them, but the warning is the announcement of a stricter default, and
+# under that default the skip is silent -- the build would succeed and ship a
+# placeholder stub instead of `claude`. Naming the package also keeps the
+# warning out of every start-up update check. `claude --version` then proves
+# the native binary actually landed, so the failure is a failed build rather
+# than a broken image.
 ADD https://registry.npmjs.org/@anthropic-ai/claude-code/latest /tmp/cc-latest.json
 RUN --mount=type=cache,target=/opt/npm-cache,sharing=locked,id=npm-${TARGETARCH} \
-    npm install -g @anthropic-ai/claude-code \
+    npm install -g --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code \
+ && claude --version \
  && chmod -R a+rwX /opt/npm-global \
  && rm /tmp/cc-latest.json \
  && chown -R "$USER_UID:$USER_GID" "/home/$USERNAME"
