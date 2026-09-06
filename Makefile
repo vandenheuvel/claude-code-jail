@@ -214,7 +214,8 @@ versions: image
 	  for c in "claude --version" "python3 --version" "rustc --version" \
 	           "Rscript --version" "node --version" "quarto --version" \
 	           "gh --version" "duckdb --version" "hyperfine --version" \
-	           "valgrind --version" "perf --version"; do \
+	           "valgrind --version" "perf --version" \
+	           "chromium --version" "playwright --version"; do \
 	    printf "%-22s %s\n" "$${c%% *}" "$$($$c 2>&1 | head -n1)"; \
 	  done'
 

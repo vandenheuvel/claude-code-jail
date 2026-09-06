@@ -10,7 +10,7 @@
 #   WITH_LATEX=0     drop the TeX Live layer
 #   WITH_R=0         drop R and the CRAN binary set
 #   WITH_RUST=0      drop rustup and the cargo tooling
-#   WITH_BROWSERS=0  drop the Playwright Chromium download
+#   WITH_BROWSERS=0  drop Chromium, both Playwrights and the screenshot stack
 #   WITH_QUARTO=0    drop Quarto
 #   WITH_TORCH=1     add CPU-only PyTorch + transformers
 #   WITH_GHIDRA=0    drop Ghidra's headless decompiler and the JDK it needs
@@ -168,7 +168,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache-${TARGE
     apt-get update && $APT \
       pandoc graphviz libgraphviz-dev imagemagick ghostscript \
       poppler-utils poppler-data qpdf gnuplot-nox librsvg2-bin \
-      optipng jpegoptim ffmpeg \
+      optipng pngquant jpegoptim ffmpeg \
       libcairo2-dev libxt-dev libfontconfig1-dev libharfbuzz-dev \
       libfribidi-dev libfreetype-dev libpng-dev libtiff-dev libjpeg-dev \
       fonts-dejavu fonts-lmodern fonts-liberation fonts-firacode \
@@ -301,7 +301,8 @@ RUN --mount=type=cache,target=/opt/uv-cache,sharing=locked,id=uv-${TARGETARCH} \
     uv pip install --python "$VENV/bin/python" \
       jupyterlab ipykernel ipython nbformat nbclient jupytext papermill \
       "httpx[http2]" requests curl-cffi beautifulsoup4 lxml selectolax parsel \
-      trafilatura feedparser scrapy playwright pypdf \
+      trafilatura feedparser scrapy pypdf \
+      playwright shot-scraper pytest-playwright selenium \
       anthropic openai litellm tiktoken tokenizers huggingface-hub datasets \
       inspect-ai pydantic jsonschema \
       ruff mypy pytest pytest-xdist pytest-cov pytest-benchmark hypothesis \
@@ -324,20 +325,70 @@ RUN --mount=type=cache,target=/opt/uv-cache,sharing=locked,id=uv-${TARGETARCH} \
       && chmod -R a+rwX "$VENV"; \
     fi
 
-# ---- headless browser -------------------------------------------------------
+# ---- headless browsers and screenshots --------------------------------------
+# Seeing the page is faster than reasoning about it, so a session should never
+# have to stop and download a browser before it can take a screenshot. Three
+# ways to drive one, because a project arrives already committed to one of them:
+#
+#   playwright (Python)  `playwright screenshot`, `shot-scraper`, pytest-playwright
+#   @playwright/test     the JS/TS runner: `npx playwright test`
+#   /usr/bin/chromium    Debian's browser, which is what puppeteer, lighthouse
+#                        and selenium (via chromedriver) reach for, and what
+#                        answers `chromium --headless --screenshot`
+#
+# Both Playwright packages are installed here rather than next to their own
+# languages, so that one layer owns every browser byte and WITH_BROWSERS=0
+# really does drop all of it. They are versioned separately and each pins its
+# own Chromium revision, so this normally holds two Playwright builds alongside
+# Debian's: about 1.7 GB of browser, and the price of the paragraph above.
+#
+# Three details, each a silent failure if left out:
+#
+#   chromium-sandbox is only Recommends, so --no-install-recommends skips it and
+#   chromium then dies with "SUID sandbox helper binary was not found" wherever
+#   the namespace sandbox is unavailable -- which is many container hosts.
+#
+#   The library list is Playwright's own dependency set and stays explicit
+#   rather than being inherited from chromium's. The bundled browser is not
+#   Debian's build and must not lose a library because Debian repackaged theirs.
+#
+#   fonts-noto-cjk, because without it every CJK glyph in a screenshot is a tofu
+#   box while the page itself reports as having loaded perfectly.
 ARG WITH_BROWSERS=1
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache-${TARGETARCH} \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked,id=apt-lists-${TARGETARCH} \
+    --mount=type=cache,target=/opt/npm-cache,sharing=locked,id=npm-${TARGETARCH} \
     if [ "$WITH_BROWSERS" = "1" ]; then \
       apt-get update && $APT \
         libnss3 libnspr4 libdbus-1-3 libglib2.0-0t64 libatk1.0-0t64 \
         libatk-bridge2.0-0t64 libatspi2.0-0t64 libcups2t64 libasound2t64 \
         libdrm2 libgbm1 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 \
         libxrandr2 libxext6 libx11-6 libxcb1 libexpat1 libpango-1.0-0 libcairo2 \
-        xvfb fonts-unifont \
+        chromium chromium-sandbox chromium-driver \
+        xvfb fonts-unifont fonts-noto-cjk \
       && playwright install chromium \
-      && chmod -R a+rwX "$PLAYWRIGHT_BROWSERS_PATH"; \
+      && npm install -g @playwright/test \
+      && ln -sf /opt/npm-global/bin/playwright /usr/local/bin/playwright-node \
+      && playwright-node install chromium \
+      && chmod -R a+rwX "$PLAYWRIGHT_BROWSERS_PATH" /opt/npm-global; \
     fi
+
+# Both Playwright CLIs are called `playwright`, and /opt/venv/bin wins the PATH
+# race, so bare `playwright` is the Python one. The npm CLI -- the half that has
+# `playwright test` -- gets a name of its own rather than being reachable only
+# through an ordering accident or `npx`.
+#
+# Everything that is not Playwright finds Chrome through one of these variables:
+# puppeteer (PUPPETEER_EXECUTABLE_PATH), lighthouse (CHROME_PATH), karma and
+# testcafe (CHROME_BIN). Pointing them at the browser already in the image is
+# also why puppeteer's own ~180 MB download is turned off; unset
+# PUPPETEER_SKIP_DOWNLOAD for a project that genuinely needs its pinned build.
+# Under WITH_BROWSERS=0 these name a binary that is not there, which is the
+# honest answer: that build has no browser and no libraries to run one either.
+ENV CHROME_BIN=/usr/bin/chromium \
+    CHROME_PATH=/usr/bin/chromium \
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
+    PUPPETEER_SKIP_DOWNLOAD=true
 
 # ---- Quarto -----------------------------------------------------------------
 # Tarball rather than the .deb: no dpkg entanglement, and it drops cleanly into
@@ -385,6 +436,8 @@ RUN V="$(curl -fsSL https://api.github.com/repos/cli/cli/releases/latest | jq -r
  && chmod 0755 /usr/local/bin/duckdb
 
 # ---- JS ---------------------------------------------------------------------
+# Playwright's JS runner is not here: it is installed in the browser layer
+# above, with the Chromium build it pins.
 RUN --mount=type=cache,target=/opt/npm-cache,sharing=locked,id=npm-${TARGETARCH} \
     npm install -g \
       prettier typescript tsx pnpm @biomejs/biome vitest promptfoo \

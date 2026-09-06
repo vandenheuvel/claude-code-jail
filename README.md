@@ -67,10 +67,60 @@ that differ.
 | **C/C++** | gcc and clang 19, cmake, ninja, `nasm` `yasm` |
 | **Data** | `numpy` `scipy` `pandas` `polars` `pyarrow` `duckdb` `statsmodels` `scikit-learn` `xgboost` `lightgbm` `lifelines` `scikit-survival`; `matplotlib` `seaborn` `plotly` `altair` `great-tables` and JupyterLab; `duckdb` `mlr` `sqlite3` `jq` `yq` at the command line |
 | **R packages** | survival analysis and resampling: `tidyverse` `data.table` `survival` `prodlim` `pec` `riskregression` `cmprsk` `timereg` `survminer` `survey` `quantreg` `glmnet` `ranger` `mgcv` `lme4` `Rcpp` `RcppArmadillo` `RcppEigen`; `testthat` `tinytest` `lintr` `covr` `bench` `microbenchmark` `profvis` |
-| **Scraping** | `httpx[http2]` `requests` `curl-cffi` `beautifulsoup4` `lxml` `selectolax` `parsel` `trafilatura` `feedparser` `scrapy` `pypdf`; Playwright with Chromium already downloaded to `/opt/playwright` |
+| **Scraping** | `httpx[http2]` `requests` `curl-cffi` `beautifulsoup4` `lxml` `selectolax` `parsel` `trafilatura` `feedparser` `scrapy` `pypdf` |
+| **Browsers** | Chromium on `PATH` plus chromedriver; Playwright for Python *and* for JS/TS, each with its Chromium already in `/opt/playwright`; `shot-scraper` `pytest-playwright` `selenium`; `xvfb` and CJK/emoji fonts |
 | **LLM eval** | `anthropic` `openai` `litellm` `tiktoken` `tokenizers` `huggingface-hub` `datasets`; harnesses `inspect-ai` (Python) and `promptfoo` (CLI) |
 | **Documents** | pandoc, Quarto, full TeX Live (`latexmk` `biber` `xetex` `luatex`), graphviz, gnuplot, ghostscript, poppler, qpdf, ImageMagick, ffmpeg, librsvg |
 | **CLI** | `rg` `fd` `bat` `fzf` `delta` `gh` `git-lfs` `just` `direnv` `entr` `tmux` `parallel` `moreutils` `shellcheck` `shfmt` `ctags`, and passwordless `sudo` |
+
+---
+
+## Screenshots
+
+Looking at the page beats reasoning about it, and a session that has to stop and
+download a browser first usually decides not to bother. So the whole stack is
+already warm: Debian's Chromium on `PATH`, Playwright for Python and for JS/TS
+with their Chromium builds in `/opt/playwright`, and the fonts a screenshot of a
+real page needs.
+
+```sh
+shot-scraper http://localhost:3000 -o shot.png -w 1280 -h 800
+shot-scraper http://localhost:3000 -o card.png -s '.pricing-card' --wait-for 'window.ready'
+shot-scraper report.html -o report.png --retina   # a local file is a path, not a file:// URL
+playwright screenshot --full-page --viewport-size 1280,800 http://localhost:3000 page.png
+chromium --headless --screenshot=shot.png --window-size=1280,800 http://localhost:3000
+```
+
+| Tool | Use |
+|---|---|
+| `shot-scraper` | the default one: selector crops, `--wait-for` a JS expression, `--javascript` to run something first, `shot-scraper pdf`, and a YAML file of many shots in one browser launch |
+| `playwright` / `playwright-node` | the Python and JS/TS CLIs: `screenshot`, `pdf`, `codegen`, and `playwright-node test` |
+| `chromium --headless` | when neither Python nor node should be in the loop |
+| `pytest-playwright`, `@playwright/test` | screenshots as assertions, with snapshot diffing |
+| `magick`, `pngquant`, `optipng`, `jpegoptim` | crop, annotate, and get the file small enough to paste somewhere |
+| `ffmpeg` | a sequence of shots into a gif or an mp4 |
+| `xvfb-run` | the occasional thing that refuses to run headless |
+
+Four things worth knowing before the first one surprises you:
+
+**Two CLIs, one name.** Both Playwright packages install a `playwright`
+command; `/opt/venv/bin` wins on `PATH`, so plain `playwright` is the Python
+one. The JS runner — the half that has `playwright test` — is `playwright-node`,
+or `npx playwright` from inside a project.
+
+**Everything else finds Chromium through the environment.** `CHROME_BIN`,
+`CHROME_PATH` and `PUPPETEER_EXECUTABLE_PATH` all point at `/usr/bin/chromium`,
+so puppeteer, lighthouse, karma and testcafe drive the browser that is already
+here. `PUPPETEER_SKIP_DOWNLOAD=true` follows from that; unset it for a project
+that genuinely needs its own pinned build. Selenium has `chromedriver`.
+
+**Shared memory.** `make` passes `--shm-size=1g`, because the 64 MB default is
+where Chromium starts crashing on real pages without ever naming the cause. A
+hand-rolled `docker run` wants the same flag, or `--disable-dev-shm-usage`.
+
+**Fonts.** DejaVu, Liberation, Noto, Noto CJK and colour emoji are installed, so
+a screenshot of a non-Latin page is text rather than a row of tofu boxes. A page
+using a webfont still needs `--wait-for 'document.fonts.ready'`.
 
 ---
 
@@ -135,12 +185,13 @@ valgrind --tool=callgrind --callgrind-out-file=a.out ./bench && callgrind_annota
 
 Everything optional is a build arg, all default to on except `WITH_TORCH`:
 `WITH_LATEX` (TeX Live), `WITH_R` (R and the CRAN set), `WITH_RUST` (rustup and
-cargo tooling), `WITH_BROWSERS` (Playwright's Chromium), `WITH_QUARTO`,
-`WITH_GHIDRA` (Ghidra and its JDK). `WITH_TORCH=1` adds CPU PyTorch,
-`transformers`, `accelerate` and `sentence-transformers` — left out by default
-because most evaluation here is API-side and it costs about a gigabyte. Also
-`RUST_VERSION=` (default `stable`) and `USER_UID=` / `USER_GID=` (default 1000,
-see [Rootless podman](#rootless-podman)).
+cargo tooling), `WITH_BROWSERS` (Chromium and both Playwrights, around 2 GB of
+which 1.7 GB is browser), `WITH_QUARTO`, `WITH_GHIDRA` (Ghidra and its JDK).
+`WITH_TORCH=1` adds CPU PyTorch, `transformers`, `accelerate` and
+`sentence-transformers` — left out by default because most evaluation here is
+API-side and it costs about a gigabyte. Also `RUST_VERSION=` (default `stable`)
+and `USER_UID=` / `USER_GID=` (default 1000, see
+[Rootless podman](#rootless-podman)).
 
 ```sh
 make slim                                  # no LaTeX, Ghidra or browser
