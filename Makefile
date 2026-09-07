@@ -5,6 +5,7 @@
 #   make shell        bash in the image instead of Claude Code
 #   make bench        shell with the capabilities perf and bpftrace need
 #   make update       refresh Claude Code (also checked before every run)
+#   make prune        reclaim the disk earlier builds are still holding
 #   make help         everything else
 #
 # There is nothing to configure before the first run. The engine is detected,
@@ -111,7 +112,7 @@ RUN = $(ENGINE) run --rm $(TTYFLAGS) \
 
 .DEFAULT_GOAL := run
 .PHONY: run image home update check-update build slim minimal rebuild shell \
-        bench versions size install push pull clean help
+        bench versions size install push pull prune clean help
 
 ## run: Claude Code on $(WORK) -- the default target
 run: check-update home
@@ -229,6 +230,35 @@ push:
 	$(ENGINE) push $(REF)
 pull:
 	$(ENGINE) pull $(REF)
+
+## prune: delete the untagged images earlier builds left behind
+# A rebuild that changes one layer leaves the whole previous image behind,
+# untagged and complete -- twenty-odd gigabytes of it. Under rootless podman
+# there is a second, ID-mapped copy of each image beside it (the chown'd
+# duplicate keep-id needs), so a single stale build can be holding 40 GB.
+# Nothing collects them on its own.
+#
+# The first symptom of that filling a disk is not a message about disk. It is an
+# `npm install` that half-unpacks a package, or a chown that stops mid-layer, in
+# a step with no obvious connection to the real cause. So this is worth running
+# after a few rebuilds, and it is the first thing to try when a build fails
+# somewhere it has never failed before.
+#
+# Only untagged images go, and only ones no container is using. $(REF), the home
+# volume with its login in it, and the BuildKit cache mounts -- apt, uv, npm and
+# the cargo registry, which are why a rebuild re-downloads almost nothing -- are
+# all left alone. `make clean` is the one that removes the image itself.
+#
+# Free disk is what gets reported, not `system df`'s reclaimable column: that
+# column counts every image no *running* container is using, so it includes
+# $(REF) and barely moves here, which reads like the prune did nothing.
+prune:
+	@root=$$($(ENGINE) info --format '{{.Store.GraphRoot}}' 2>/dev/null \
+	      || $(ENGINE) info --format '{{.DockerRootDir}}' 2>/dev/null); \
+	 free() { df -h "$$root" | awk 'NR==2 {print $$4}'; }; \
+	 before=$$(free); \
+	 $(ENGINE) image prune -f; \
+	 echo "==> free on $$root: $$before -> $$(free)"
 
 ## clean: remove the image and the persistent home volume
 # The home volume holds the container's Claude Code login. Removing it means

@@ -27,6 +27,7 @@ Inside a clone, plain `make` does the same on the current directory:
 make            # Claude Code on the current directory
 make shell      # bash instead
 make bench      # shell with the capabilities perf needs
+make prune      # reclaim the disk earlier builds are still holding
 make help       # everything else
 ```
 
@@ -198,7 +199,18 @@ make slim                                  # no LaTeX, Ghidra or browser
 make minimal                               # languages and core CLI only
 make build BUILDARGS='--build-arg WITH_TORCH=1 --build-arg WITH_R=0'
 make size                                  # per-layer breakdown
+make prune                                 # collect the images earlier builds left
 ```
+
+That last one matters more than it looks. A rebuild that changes one layer
+leaves the whole previous image behind, untagged and complete — twenty-odd
+gigabytes — and under rootless podman there is a second, ID-mapped copy of each
+image beside it, so one stale build can be sitting on 40 GB. Nothing collects
+them on its own, and a disk filled that way does not announce itself as a disk
+problem: it surfaces as an `npm install` that half-unpacks a package, or a chown
+that stops mid-layer, in a build step with no visible connection to the cause.
+`make prune` takes only untagged images that no container is using — the tagged
+image, the home volume and the BuildKit caches all stay.
 
 The build uses BuildKit cache mounts for apt, uv, npm and the cargo registry,
 so a rebuild after editing one package list re-downloads almost nothing. That
