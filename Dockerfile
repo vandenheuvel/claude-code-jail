@@ -186,6 +186,12 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache-${TARGE
     done
 
 # ---- LaTeX ------------------------------------------------------------------
+# texlive-plain-generic is the engine-independent tree, and none of the
+# latex-* sets above pull it in. ulem lives there -- \sout, \uline, \uwave and
+# the rest of the underlining macros -- and twenty-odd styles that *are*
+# installed here (changes, dashundergaps, pdfreview, ezedits, ...) require it,
+# so without this the build dies on a missing ulem.sty in a package the
+# document never named.
 ARG WITH_LATEX=1
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache-${TARGETARCH} \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked,id=apt-lists-${TARGETARCH} \
@@ -194,6 +200,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache-${TARGE
         texlive-latex-base texlive-latex-recommended texlive-latex-extra \
         texlive-fonts-recommended texlive-fonts-extra \
         texlive-science texlive-pictures texlive-bibtex-extra \
+        texlive-plain-generic \
         texlive-luatex texlive-xetex \
         latexmk biber chktex dvipng cm-super; \
     fi
