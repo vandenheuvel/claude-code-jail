@@ -72,7 +72,7 @@ that differ.
 | **Browsers** | Chromium on `PATH` plus chromedriver; Playwright for Python *and* for JS/TS, each with its Chromium already in `/opt/playwright`; `shot-scraper` `pytest-playwright` `selenium`; `xvfb` and CJK/emoji fonts |
 | **LLM eval** | `anthropic` `openai` `litellm` `tiktoken` `tokenizers` `huggingface-hub` `datasets`; harnesses `inspect-ai` (Python) and `promptfoo` (CLI) |
 | **Documents** | pandoc, Quarto, full TeX Live (`latexmk` `biber` `xetex` `luatex`), graphviz, gnuplot, ghostscript, poppler, qpdf, ImageMagick, ffmpeg, librsvg |
-| **CLI** | `rg` `fd` `bat` `fzf` `delta` `gh` `git-lfs` `just` `direnv` `entr` `tmux` `parallel` `moreutils` `shellcheck` `shfmt` `ctags`, and passwordless `sudo` |
+| **CLI** | `rg` `fd` `bat` `fzf` `delta` `gh` `git-lfs` `just` `direnv` `entr` `tmux` `parallel` `moreutils` `shellcheck` `shfmt` `ctags` `github-latest`, and passwordless `sudo` |
 
 ---
 

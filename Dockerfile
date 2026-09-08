@@ -397,12 +397,60 @@ ENV CHROME_BIN=/usr/bin/chromium \
     PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
     PUPPETEER_SKIP_DOWNLOAD=true
 
+# ---- github-latest ----------------------------------------------------------
+# Three of the downloads below track whatever the newest release happens to be,
+# and asking api.github.com which one that is spends a request from a budget of
+# 60 per hour, per IP, unauthenticated. A build machine that shares an outbound
+# address with anything else -- CI, a NAT, another container -- can find that
+# budget already gone, and then the API answers 403 and the build dies halfway
+# through a layer. The release pages carry the same facts under no such limit:
+# /releases/latest redirects to the tag, and the expanded_assets fragment lists
+# the files attached to it. No token, no quota.
+#
+# Left on PATH afterwards, because a session reaching for the newest release of
+# something runs into exactly the problem the build just did.
+COPY --chmod=0755 <<'EOF' /usr/local/bin/github-latest
+#!/bin/bash
+# github-latest tag   OWNER/REPO          -> newest release tag, e.g. v1.10.18
+# github-latest asset OWNER/REPO 'REGEX'  -> download URL of the first asset
+#                                            whose path matches the ERE
+set -euo pipefail
+
+GET=(curl -fsSL --retry 3 --retry-delay 2)
+
+tag() {
+  local url
+  url="$("${GET[@]}" -I -o /dev/null -w '%{url_effective}' \
+         "https://github.com/$1/releases/latest")"
+  case "$url" in
+    */releases/tag/*) printf '%s\n' "${url##*/releases/tag/}" ;;
+    *) echo "github-latest: $1 has no published release ($url)" >&2; exit 1 ;;
+  esac
+}
+
+asset() {
+  local page path
+  page="$("${GET[@]}" "https://github.com/$1/releases/expanded_assets/$(tag "$1")")"
+  # sed rather than `head -n1`: closing the pipe early trips `set -o pipefail`.
+  path="$(printf '%s\n' "$page" \
+          | grep -oE "/$1/releases/download/[^\"]+" | grep -E "$2" | sed -n 1p)"
+  [ -n "$path" ] || { echo "github-latest: no asset matching /$2/ in $1" >&2; exit 1; }
+  printf 'https://github.com%s\n' "$path"
+}
+
+case "${1-}" in
+  tag)   tag "$2" ;;
+  asset) asset "$2" "$3" ;;
+  *)     echo "usage: github-latest tag|asset OWNER/REPO [REGEX]" >&2; exit 2 ;;
+esac
+EOF
+
 # ---- Quarto -----------------------------------------------------------------
 # Tarball rather than the .deb: no dpkg entanglement, and it drops cleanly into
 # /opt/quarto which is already on PATH.
 ARG WITH_QUARTO=1
 RUN if [ "$WITH_QUARTO" = "1" ]; then \
-      V="$(curl -fsSL https://api.github.com/repos/quarto-dev/quarto-cli/releases/latest | jq -r .tag_name | sed 's/^v//')"; \
+      V="$(github-latest tag quarto-dev/quarto-cli)"; V="${V#v}"; \
       mkdir -p /opt/quarto; \
       curl -fsSL "https://github.com/quarto-dev/quarto-cli/releases/download/v${V}/quarto-${V}-linux-${TARGETARCH}.tar.gz" \
         | tar xz -C /opt/quarto --strip-components=1; \
@@ -418,8 +466,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache-${TARGE
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked,id=apt-lists-${TARGETARCH} \
     if [ "$WITH_GHIDRA" = "1" ]; then \
       apt-get update && $APT openjdk-21-jdk-headless; \
-      url="$(curl -fsSL https://api.github.com/repos/NationalSecurityAgency/ghidra/releases/latest \
-             | jq -r '.assets[] | select(.name | endswith(".zip")) | .browser_download_url' | head -n1)"; \
+      url="$(github-latest asset NationalSecurityAgency/ghidra '\.zip$')"; \
       curl -fsSL -o /tmp/ghidra.zip "$url"; \
       unzip -q /tmp/ghidra.zip -d /opt; \
       rm /tmp/ghidra.zip; \
@@ -431,7 +478,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache-${TARGE
 # ---- standalone binaries: gh, duckdb ----------------------------------------
 # gh from upstream: trixie packages 2.46, old enough to be missing flags that
 # current PR and issue workflows use.
-RUN V="$(curl -fsSL https://api.github.com/repos/cli/cli/releases/latest | jq -r .tag_name | sed 's/^v//')" \
+RUN V="$(github-latest tag cli/cli)" && V="${V#v}" \
  && curl -fsSL "https://github.com/cli/cli/releases/download/v${V}/gh_${V}_linux_${TARGETARCH}.tar.gz" \
     | tar xz -C /tmp \
  && install -m 0755 "/tmp/gh_${V}_linux_${TARGETARCH}/bin/gh" /usr/local/bin/gh \
