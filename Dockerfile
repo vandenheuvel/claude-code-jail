@@ -193,6 +193,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache-${TARGE
 # installed here (changes, dashundergaps, pdfreview, ezedits, ...) require it,
 # so without this the build dies on a missing ulem.sty in a package the
 # document never named.
+#
+# texlive-lang-german is babel-german (german.ldf, ngerman.ldf) plus the dehyph
+# hyphenation patterns. Templates that load ngerman unconditionally -- even for
+# a document written in English -- otherwise stop on a missing ngerman.ldf, and
+# a stub .ldf in its place compiles but hyphenates German as English.
 ARG WITH_LATEX=1
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache-${TARGETARCH} \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked,id=apt-lists-${TARGETARCH} \
@@ -201,7 +206,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache-${TARGE
         texlive-latex-base texlive-latex-recommended texlive-latex-extra \
         texlive-fonts-recommended texlive-fonts-extra \
         texlive-science texlive-pictures texlive-bibtex-extra \
-        texlive-plain-generic \
+        texlive-plain-generic texlive-lang-german \
         texlive-luatex texlive-xetex \
         latexmk biber chktex dvipng cm-super; \
     fi
