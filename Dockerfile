@@ -14,6 +14,7 @@
 #   WITH_QUARTO=0    drop Quarto
 #   WITH_TORCH=1     add CPU-only PyTorch + transformers
 #   WITH_GHIDRA=0    drop Ghidra's headless decompiler and the JDK it needs
+#   WITH_AMC=0       drop auto-multiple-choice (WITH_LATEX=0 drops it too)
 #   USER_UID/USER_GID  match your host account so bind mounts stay writable
 #
 # `node:26-slim` resolves to Debian 13 "trixie". Pinned explicitly: every apt
@@ -496,6 +497,34 @@ RUN --mount=type=cache,target=/opt/npm-cache,sharing=locked,id=npm-${TARGETARCH}
     npm install -g \
       prettier typescript tsx pnpm @biomejs/biome vitest promptfoo \
  && chmod -R a+rwX /opt/npm-global
+
+# ---- auto-multiple-choice ---------------------------------------------------
+# AMC: multiple-choice exams typeset in LaTeX, then marked from scans of the
+# completed answer sheets. The GTK interface has no display to open here, but
+# the scan-to-marks pipeline is all commands -- prepare, meptex, getimages,
+# analyse, note, export, annotate -- and runs headless.
+#
+# Gated on WITH_LATEX as well as its own knob, because it is not independent of
+# it: auto-multiple-choice-common hard-depends on texlive-latex-extra,
+# texlive-fonts-extra and the rest of that set, so a WITH_LATEX=0 build that
+# still installed it would quietly get most of TeX Live back.
+#
+# Two Recommends are named, because each is a hard failure at the point of use
+# rather than a missing nicety: libopenoffice-oodoc-perl is `export --module
+# ods`, the format the GUI defaults to, and libyaml-syck-perl is what reads a
+# project's topics.yml. The rest are printing and mailing, which a container
+# does not do, and two helpers that already have working fallbacks.
+#
+# A layer of its own this far down, rather than a line in the LaTeX layer: a
+# build arg invalidates every layer after the one that reads it, and up there
+# flipping WITH_AMC would rebuild R, Rust, Python and the browsers.
+ARG WITH_AMC=1
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache-${TARGETARCH} \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked,id=apt-lists-${TARGETARCH} \
+    if [ "$WITH_AMC" = "1" ] && [ "$WITH_LATEX" = "1" ]; then \
+      apt-get update && $APT \
+        auto-multiple-choice libopenoffice-oodoc-perl libyaml-syck-perl; \
+    fi
 
 # ---- non-root user ----------------------------------------------------------
 # Claude Code refuses --dangerously-skip-permissions while running as root,

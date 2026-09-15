@@ -71,7 +71,7 @@ that differ.
 | **Scraping** | `httpx[http2]` `requests` `curl-cffi` `beautifulsoup4` `lxml` `selectolax` `parsel` `trafilatura` `feedparser` `scrapy` `pypdf` |
 | **Browsers** | Chromium on `PATH` plus chromedriver; Playwright for Python *and* for JS/TS, each with its Chromium already in `/opt/playwright`; `shot-scraper` `pytest-playwright` `selenium`; `xvfb` and CJK/emoji fonts |
 | **LLM eval** | `anthropic` `openai` `litellm` `tiktoken` `tokenizers` `huggingface-hub` `datasets`; harnesses `inspect-ai` (Python) and `promptfoo` (CLI) |
-| **Documents** | pandoc, Quarto, full TeX Live (`latexmk` `biber` `xetex` `luatex`), graphviz, gnuplot, ghostscript, poppler, qpdf, ImageMagick, ffmpeg, librsvg |
+| **Documents** | pandoc, Quarto, full TeX Live (`latexmk` `biber` `xetex` `luatex`), graphviz, gnuplot, ghostscript, poppler, qpdf, ImageMagick, ffmpeg, librsvg; `auto-multiple-choice` for multiple-choice exams marked from scans |
 | **CLI** | `rg` `fd` `bat` `fzf` `delta` `gh` `git-lfs` `just` `direnv` `entr` `tmux` `parallel` `moreutils` `shellcheck` `shfmt` `ctags` `github-latest`, and passwordless `sudo` |
 
 ---
@@ -187,7 +187,9 @@ valgrind --tool=callgrind --callgrind-out-file=a.out ./bench && callgrind_annota
 Everything optional is a build arg, all default to on except `WITH_TORCH`:
 `WITH_LATEX` (TeX Live), `WITH_R` (R and the CRAN set), `WITH_RUST` (rustup and
 cargo tooling), `WITH_BROWSERS` (Chromium and both Playwrights, around 2 GB of
-which 1.7 GB is browser), `WITH_QUARTO`, `WITH_GHIDRA` (Ghidra and its JDK).
+which 1.7 GB is browser), `WITH_QUARTO`, `WITH_GHIDRA` (Ghidra and its JDK),
+`WITH_AMC` (auto-multiple-choice, which depends on TeX Live and so also goes
+with `WITH_LATEX=0`).
 `WITH_TORCH=1` adds CPU PyTorch, `transformers`, `accelerate` and
 `sentence-transformers` — left out by default because most evaluation here is
 API-side and it costs about a gigabyte. Also `RUST_VERSION=` (default `stable`)
@@ -249,6 +251,15 @@ that flag under uid 0. `--user root` is available if you need it, but pass
 `/opt/venv`, cargo, npm-global and quarto from any `bash -l`, `su -` or ssh in —
 which demotes `python3` to `/usr/bin/python3` rather than failing outright.
 `/etc/profile.d/10-claude-path.sh` puts it back.
+
+**Exams.** `auto-multiple-choice` has no display for its GTK interface, but
+everything from typesetting to marks is a subcommand: `prepare` (`--mode s` for
+the subject and layout, `--mode b` for the scoring data), `meptex`, `getimages`,
+`analyse`, `note`, `export` (`--module CSV`, `ods` or `List`) and `annotate`.
+Example projects to start from are in `/usr/share/auto-multiple-choice/models`.
+One trap: the man page spells `analyse`'s scan-list option `--list-fichiers`,
+but only `--liste-fichiers` is accepted, and the misspelling ends with the list
+file itself loaded as a scan and OpenCV aborting on an empty image.
 
 **What isn't here.** Geospatial (GDAL/PROJ/GEOS and `sf`), CUDA, and databases
 beyond SQLite and DuckDB. All are one `sudo apt-get install` away, and the apt
