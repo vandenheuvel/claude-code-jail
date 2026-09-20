@@ -49,6 +49,9 @@ ifeq ($(IS_PODMAN),podman)
   BUILD_UID := 1000
   BUILD_GID := 1000
   USERNS    := --userns=keep-id:uid=1000,gid=1000
+  # See MASKFLAGS below. podman spells it per-path and leaves /sys/firmware
+  # and the read-only paths alone; docker's switch is all-or-nothing.
+  MASKFLAGS := --security-opt 'unmask=/proc/*'
   # podman builds OCI format by default, and there the Dockerfile's SHELL
   # directive is ignored with only a warning -- silently dropping `set -e` and
   # `pipefail` from every RUN in the build, which is exactly the masking that
@@ -91,6 +94,7 @@ else
   USERNS    :=
   FORMAT    :=
   PASTAFIX  :=
+  MASKFLAGS := --security-opt systempaths=unconfined
 endif
 
 # Directory to mount at /workspace.
@@ -148,8 +152,26 @@ TTYFLAGS := $(shell [ -t 0 ] && echo -it || echo -i)
 
 # --shm-size: the default /dev/shm is 64 MB, which Chromium outgrows the moment
 # a page is non-trivial. Cheap to raise, annoying to diagnose.
+#
+# MASKFLAGS is what makes the agents' own sandboxes work, and it is the one
+# flag here that trades away a little hardening. Both agents sandbox through
+# bubblewrap, and a bwrap sandbox mounts a fresh /proc; the engine masks
+# /proc/acpi, /proc/kcore and the rest with locked mounts that a new procfs
+# would hide, so the kernel refuses the mount and every sandboxed command dies
+# as `bwrap: Can't mount proc on /proc: Operation not permitted`. Unmasking
+# /proc is the only thing that lifts it.
+#
+# The trade is small in the direction this box is usually run: under rootless
+# podman the container user is an unprivileged host account, so an unmasked
+# /proc/kcore is still unreadable to it, and `unmask=/proc/*` leaves
+# /sys/firmware masked. Under rootful docker `systempaths=unconfined` is the
+# broader switch -- it drops the read-only paths too -- but a container handing
+# out passwordless sudo was never the thing standing between an agent and the
+# host anyway. Drop it with MASKFLAGS= if that is not your trade:
+#
+#   make MASKFLAGS=        # keep the masks, lose both agents' sandboxes
 RUN = $(ENGINE) run --rm $(TTYFLAGS) \
-        --shm-size=1g $(USERNS) \
+        --shm-size=1g $(USERNS) $(MASKFLAGS) \
         -v "$(WORK)":/workspace \
         -v $(HOMEVOL):/home/claude \
         $(GITFLAGS) $(ENVFLAGS) $(NETFLAGS) $(RUNARGS)
@@ -166,8 +188,9 @@ run: check-update home
 # The image's ENTRYPOINT is `claude`, so the second agent is an override of it
 # rather than a second image -- same mounts, same forwarded environment, same
 # /home/claude, so both agents' logins and history sit in the one volume.
-# Codex sandboxes its own command execution and brings the bubblewrap it needs,
-# so unlike `bench` this target adds no capabilities and relaxes no seccomp.
+# Codex sandboxes its own command execution and needs nothing here to do it
+# beyond the MASKFLAGS every target already gets: unlike `bench` this adds no
+# capability and relaxes no seccomp profile.
 codex: check-update home
 	$(RUN) --entrypoint codex $(REF) $(ARGS)
 
@@ -268,7 +291,7 @@ versions: image
 	  for c in "claude --version" "codex --version" "python3 --version" "rustc --version" \
 	           "Rscript --version" "node --version" "quarto --version" \
 	           "gh --version" "duckdb --version" "hyperfine --version" \
-	           "valgrind --version" "perf --version" \
+	           "valgrind --version" "perf --version" "bwrap --version" \
 	           "chromium --version" "playwright --version"; do \
 	    printf "%-22s %s\n" "$${c%% *}" "$$($$c 2>&1 | head -n1)"; \
 	  done'

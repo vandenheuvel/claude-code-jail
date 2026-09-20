@@ -69,7 +69,10 @@ It mounts the target directory at `/workspace` (override with `WORK=`), keeps
 mounts `~/.gitconfig` read-only so commits are attributed, forwards
 `ANTHROPIC_API_KEY`, `GH_TOKEN` and friends when set on the host, and passes
 `--shm-size=1g` — Docker's 64 MB default is where headless Chromium starts
-crashing on real pages, in ways that don't name the cause.
+crashing on real pages, in ways that don't name the cause. It also unmasks
+`/proc`, without which neither agent's sandbox can start; that one is a
+trade, and it is spelled out under
+[Two agents, one image](#two-agents-one-image).
 
 Every run also checks for newer agents first. Claude Code and Codex each sit in
 a layer of their own at the end of the Dockerfile, keyed on that package's npm
@@ -109,15 +112,40 @@ codex login --device-auth                             # code to enter elsewhere
 printenv OPENAI_API_KEY | codex login --with-api-key  # or just hand it a key
 ```
 
-**Sandboxing works in here.** Codex sandboxes the commands it runs — Landlock
-and seccomp for `read-only`, bubblewrap for `workspace-write` — and it ships its
-own `bwrap` rather than wanting Debian's, so both modes work under the flags
-`make` already passes: no extra package, no added capability, no
-`seccomp=unconfined`. What it does depend on is `/workspace` being writable by
-the container user, which under rootless podman is the thing
-`--userns=keep-id` fixes (see [Rootless podman](#rootless-podman)). Without it
-bubblewrap fails as `bwrap: Can't mkdir /workspace/.agents: Permission denied`,
-which names neither uids nor the mount.
+**Sandboxing works in here — for both agents.** Codex sandboxes the commands it
+runs (Landlock and seccomp for `read-only`, bubblewrap for `workspace-write`),
+and Claude Code's sandbox shells out to bubblewrap as well. Debian's
+`bubblewrap` is installed, and since a `bwrap` on `PATH` wins over the copy
+Codex carries in its own package, the two agents end up on one sandbox
+implementation rather than two. `codex sandbox` is the cheapest way to see it
+working, no token spent on a model:
+
+```sh
+codex sandbox -- touch /workspace/x                     # read-only: denied
+codex sandbox -c sandbox_mode=workspace-write -- touch /workspace/x
+```
+
+That costs one flag, which `make` passes on every target as `MASKFLAGS`. A
+bwrap sandbox mounts a fresh `/proc`; the engine masks `/proc/acpi`,
+`/proc/kcore` and the rest with locked mounts that a new procfs would hide, so
+the kernel refuses — `bwrap: Can't mount proc on /proc: Operation not
+permitted`, on every sandboxed command. `--security-opt unmask=/proc/*` under
+podman, `--security-opt systempaths=unconfined` under docker, and that is the
+whole fix. `make MASKFLAGS=` puts the masks back and takes both sandboxes with
+them.
+
+The trade is a mild one in the direction this is usually run: under rootless
+podman the container user is an unprivileged host account, so an unmasked
+`/proc/kcore` is still unreadable to it, `unmask=/proc/*` leaves
+`/sys/firmware` alone, and the box hands out passwordless `sudo` anyway.
+Docker's switch is the blunter of the two — it drops the read-only paths as
+well.
+
+The other thing the sandboxes depend on is `/workspace` being writable by the
+container user, which under rootless podman is what `--userns=keep-id` fixes
+(see [Rootless podman](#rootless-podman)). Without it bubblewrap fails as
+`bwrap: Can't mkdir /workspace/.agents: Permission denied`, which names neither
+uids nor the mount.
 
 `--dangerously-bypass-approvals-and-sandbox` is the counterpart of Claude
 Code's `--dangerously-skip-permissions` — and is documented upstream as being
@@ -146,7 +174,7 @@ make codex ARGS='-s workspace-write -a on-request'   # or keep its sandbox
 | **Browsers** | Chromium on `PATH` plus chromedriver; Playwright for Python *and* for JS/TS, each with its Chromium already in `/opt/playwright`; `shot-scraper` `pytest-playwright` `selenium`; `xvfb` and CJK/emoji fonts |
 | **LLM eval** | `anthropic` `openai` `litellm` `tiktoken` `tokenizers` `huggingface-hub` `datasets`; harnesses `inspect-ai` (Python) and `promptfoo` (CLI) |
 | **Documents** | pandoc, Quarto, full TeX Live (`latexmk` `biber` `xetex` `luatex`), graphviz, gnuplot, ghostscript, poppler, qpdf, ImageMagick, ffmpeg, librsvg; `auto-multiple-choice` for multiple-choice exams marked from scans |
-| **CLI** | `rg` `fd` `bat` `fzf` `delta` `gh` `git-lfs` `just` `direnv` `entr` `tmux` `parallel` `moreutils` `shellcheck` `shfmt` `ctags` `github-latest`, and passwordless `sudo` |
+| **CLI** | `rg` `fd` `bat` `fzf` `delta` `gh` `git-lfs` `just` `direnv` `entr` `tmux` `parallel` `moreutils` `shellcheck` `shfmt` `ctags` `github-latest` `bwrap`, and passwordless `sudo` |
 
 ---
 

@@ -567,6 +567,37 @@ RUN git config --system --add safe.directory '*' \
 RUN printf 'export PATH=%s\n' "$PATH" > /etc/profile.d/10-claude-path.sh \
  && chmod 0644 /etc/profile.d/10-claude-path.sh
 
+# ---- bubblewrap -------------------------------------------------------------
+# `bwrap` is what Claude Code's sandbox shells out to on Linux. It is resolved
+# off PATH, and with nothing there the sandbox refuses to start: "bubblewrap is
+# required for subprocess env scrubbing and isolation". socat, the only other
+# tool that message names, is already in the core CLI layer.
+#
+# Installing it is not neutral for the other agent, and this is the part worth
+# knowing. Codex ships a `bwrap` of its own under codex-resources and used it
+# happily when nothing else was around -- but a bwrap on PATH wins, so from
+# this layer on Codex sandboxes through Debian's binary too. That is one
+# sandbox implementation for both agents rather than two, which is the better
+# arrangement, but it means the run flags now have to suit it: a bwrap sandbox
+# mounts a fresh /proc, the engine masks /proc/acpi, /proc/kcore and the rest
+# with locked mounts that a new procfs would hide, and the kernel refuses with
+# "Can't mount proc on /proc: Operation not permitted". Every sandboxed
+# command dies there. The Makefile's MASKFLAGS unmasks /proc for exactly this
+# reason and is in the flags of every target; `make MASKFLAGS=` is the shortest
+# way to watch both agents' sandboxes stop working.
+#
+# Binds, tmpfs and --unshare-{user,pid,net} never needed any of that, so a
+# hand-written bwrap that does not rebuild /proc runs under bare flags.
+#
+# A layer of its own down here rather than a word in the core CLI layer, for
+# the same reason auto-multiple-choice is one: the package is 142 kB and pulls
+# in no new dependency, while adding it up there would rebuild LaTeX, R, Rust,
+# Python and the browsers to do it.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache-${TARGETARCH} \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked,id=apt-lists-${TARGETARCH} \
+    apt-get update && $APT bubblewrap \
+ && bwrap --version
+
 # ---- coding agents ----------------------------------------------------------
 # Claude Code and Codex, last and a layer each, because these are the layers
 # that change daily. ADD of the registry's `latest` metadata makes the published
@@ -606,9 +637,13 @@ RUN --mount=type=cache,target=/opt/npm-cache,sharing=locked,id=npm-${TARGETARCH}
 #
 # Nothing needs to be installed alongside it. Codex sandboxes the commands it
 # runs -- Landlock and seccomp for read-only, bubblewrap for workspace-write --
-# and ships its own `bwrap` under codex-resources rather than wanting Debian's.
-# Both modes work inside the container under the run flags the Makefile already
-# passes, with no added capability and no loosened seccomp profile.
+# and the bubblewrap layer above is the one it picks up, for the reasons given
+# there. Both modes work inside the container under the run flags the Makefile
+# passes, with no added capability and no loosened seccomp profile, and
+# `codex sandbox` shows it without spending a token on the model:
+#
+#   codex sandbox -- touch /workspace/x                     # read-only: denied
+#   codex sandbox -c sandbox_mode=workspace-write -- touch /workspace/x
 ADD https://registry.npmjs.org/@openai/codex/latest /tmp/codex-latest.json
 RUN --mount=type=cache,target=/opt/npm-cache,sharing=locked,id=npm-${TARGETARCH} \
     npm install -g @openai/codex \
