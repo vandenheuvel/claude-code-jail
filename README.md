@@ -16,22 +16,40 @@ make -f ~/git/claude-code-container/Makefile
 ```
 
 The build context is the Makefile's own directory, which leaves the current
-directory free to be the thing that gets mounted. Worth an alias:
+directory free to be the thing that gets mounted. `make install` puts that
+invocation on your PATH as `claude-box`, with this Makefile's path baked in:
+
+```sh
+make install                              # ~/.local/bin, or BINDIR=
+claude-box                                # Claude Code on the current directory
+claude-box -p 'what does this build?'     # its flags, passed through
+claude-box codex -m gpt-5                 # a target first, then the agent's flags
+claude-box shell                          # bash instead
+claude-box WORK=/home/you/src/other       # a make variable, exactly as make takes it
+```
+
+An alias cannot do both halves of that, which is why the launcher is a script.
 
 ```sh
 alias claude-box='make -f ~/git/claude-code-container/Makefile'
-alias codex-box='make -f ~/git/claude-code-container/Makefile codex'
 ```
 
-Those take no arguments — make would read them as targets of its own, so
-`codex-box -m gpt-5` starts a bare session and *then* fails on `No rule to make
-target 'gpt-5'`. To pass flags through, make it a function instead, which is the
-same thing with `ARGS` filled in:
+An alias takes no arguments — make reads a bare `-m gpt-5` as a target of its
+own, so `claude-box -m gpt-5` starts a session *without* the flag and only then
+fails on `No rule to make target 'gpt-5'`. A function with `ARGS="$*"` fixes
+that and gives up the targets, so `claude-box shell` becomes a Claude Code
+session with two stray arguments:
 
 ```sh
 claude-box() { make -f ~/git/claude-code-container/Makefile       ARGS="$*"; }
 codex-box()  { make -f ~/git/claude-code-container/Makefile codex ARGS="$*"; }
 ```
+
+The installed launcher keeps both: leading words make would understand — a
+target, or a `VAR=value` assignment — go to make as they are, and from the first
+word it would not understand, everything is the agent's and goes to `ARGS`,
+quoted, so `-p 'two words'` stays one argument and a `$` in a prompt reaches the
+agent rather than make's expander.
 
 Inside a clone, plain `make` does the same on the current directory:
 
@@ -326,7 +344,8 @@ cache is intact.
 ## Rootless podman
 
 The Makefile detects the engine and adapts. On docker none of this applies; on
-rootless podman three things differ, and each is a silent failure if left out.
+rootless podman a handful of things differ, and each is a silent failure if
+left out.
 
 **Bind mounts.** Rootless podman maps your account to container uid 0 and every
 other container uid into your subuid range, so `/workspace` arrives root-owned
@@ -352,6 +371,33 @@ keep-id. One first populated *without* keep-id is owned by a subuid, and then
 Claude Code cannot read its own credentials: `Not logged in`, with
 `.credentials.json` sitting right there. `make` detects and repairs that before
 starting, so switching an existing setup over needs no manual step.
+
+**The network.** podman networks the container with pasta, which builds the
+namespace by copying the host's default-route interface: its address, and then a
+default route through its gateway. On a host sitting on one LAN twice — wired
+and wifi on the same subnet, a docked laptop — only one of the two interfaces
+gets the on-link route for that subnet, and the other's address is left flagged
+`noprefixroute`. If the default route happens to be on that second interface,
+pasta clones the address *with* the flag, the kernel creates no on-link route in
+the namespace either, and pasta's `default via <gateway>` is then rejected as
+unreachable. The container comes up with an IPv4 address and not one IPv4 route.
+
+Nothing says so. What the agent reports is that it cannot reach its server,
+which reads like an outage or a bad login: the container's `resolv.conf` lists
+pasta's forwarder and the host's IPv4 resolvers first, glibc only ever tries
+three nameservers, and so every lookup fails — while IPv6, which pasta
+configured correctly, works the whole time. To see it for what it is:
+
+```sh
+claude-box shell -c 'getent hosts api.anthropic.com; cat /proc/net/route'
+```
+
+The Makefile hands pasta the address explicitly, which makes it assign that
+address itself rather than clone the host's, without the inherited flag, and
+both routes land. Only a host missing the on-link route is touched; everywhere
+else pasta keeps its own defaults. A `--network=...` of your own in `RUNARGS`
+turns the repair off rather than colliding with it, because podman rejects a
+second `--network` instead of taking the later one.
 
 ---
 

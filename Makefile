@@ -54,11 +54,43 @@ ifeq ($(IS_PODMAN),podman)
   # `pipefail` from every RUN in the build, which is exactly the masking that
   # SHELL line exists to prevent.
   FORMAT    := --format docker
+
+  # Rootless podman networks the container with pasta, which builds the
+  # namespace by copying the host's default-route interface: its address, and
+  # then a default route through its gateway. On a host sitting on one LAN
+  # twice -- wired and wifi on the same subnet, a docked laptop -- only one of
+  # the two interfaces gets the on-link route for that subnet, and the other's
+  # address is left flagged `noprefixroute`. If the default route happens to be
+  # on that second interface, pasta copies the address *with* the flag, so the
+  # kernel creates no on-link route in the namespace either, and pasta's
+  # `default via <gateway>` is then rejected as unreachable. The container comes
+  # up with an IPv4 address and not one IPv4 route.
+  #
+  # Nothing says so. What the agent reports is that it cannot reach its server,
+  # which reads like an outage or a bad login: the container's resolv.conf lists
+  # pasta's forwarder and the host's IPv4 resolvers first, glibc only ever tries
+  # three nameservers, and so every lookup fails -- while IPv6, which pasta
+  # configured correctly, works the whole time.
+  #
+  # Handing pasta the address explicitly makes it assign that address itself
+  # rather than clone the host's, without the inherited flag, and the on-link
+  # route and the default route both land. Only a host missing the on-link route
+  # is touched; everywhere else this is empty and pasta keeps its own defaults.
+  PASTAFIX := $(shell \
+    set -- $$(ip -4 route show default 2>/dev/null \
+      | awk 'NR==1 { for (i = 1; i < NF; i++) { if ($$i == "via") g = $$(i+1); \
+                     if ($$i == "dev") d = $$(i+1) } } END { if (g && d) print d, g }'); \
+    [ -n "$$1" ] || exit 0; \
+    ip -4 route show dev "$$1" scope link 2>/dev/null | grep -q . && exit 0; \
+    a=$$(ip -4 -o addr show dev "$$1" scope global 2>/dev/null | awk 'NR==1 { print $$4 }'); \
+    [ -n "$$a" ] || exit 0; \
+    echo "--network=pasta:-a,$$a,-g,$$2")
 else
   BUILD_UID := $(shell id -u)
   BUILD_GID := $(shell id -g)
   USERNS    :=
   FORMAT    :=
+  PASTAFIX  :=
 endif
 
 # Directory to mount at /workspace.
@@ -70,6 +102,13 @@ HOMEVOL ?= claude-home
 
 # Extra args appended to the run command, e.g. `make RUNARGS=--network=none`.
 RUNARGS ?=
+
+# podman rejects a second --network outright rather than letting the later one
+# win, so the pasta repair above has to stand down whenever RUNARGS names a
+# network of its own -- `--network=none` for a flight, `--network=host` to reach
+# a service on the host. Recursive `=`, so RUNARGS is read when the recipe runs
+# and a target that appends to it (bench) is seen too.
+NETFLAGS = $(if $(findstring --network,$(RUNARGS)),,$(PASTAFIX))
 
 # Environment forwarded into the container when set on the host. OPENAI_API_KEY
 # is Codex's API-key path; `codex login` instead writes ~/.codex/auth.json, which
@@ -113,7 +152,7 @@ RUN = $(ENGINE) run --rm $(TTYFLAGS) \
         --shm-size=1g $(USERNS) \
         -v "$(WORK)":/workspace \
         -v $(HOMEVOL):/home/claude \
-        $(GITFLAGS) $(ENVFLAGS) $(RUNARGS)
+        $(GITFLAGS) $(ENVFLAGS) $(NETFLAGS) $(RUNARGS)
 
 .DEFAULT_GOAL := run
 .PHONY: run image home update check-update build slim minimal rebuild shell \
