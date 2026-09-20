@@ -1,8 +1,9 @@
 # Claude Code workstation image
 
-A container a Claude Code session can be dropped into and be productive in
+A container a coding agent can be dropped into and be productive in
 immediately — Rust, Python and R, data analysis, scraping, LLM evaluation and
-performance work — without stopping to install anything.
+performance work — without stopping to install anything. Claude Code is the
+default; Codex is installed beside it and shares the whole toolchain.
 
 ## Running it
 
@@ -19,12 +20,24 @@ directory free to be the thing that gets mounted. Worth an alias:
 
 ```sh
 alias claude-box='make -f ~/git/claude-code-container/Makefile'
+alias codex-box='make -f ~/git/claude-code-container/Makefile codex'
+```
+
+Those take no arguments — make would read them as targets of its own, so
+`codex-box -m gpt-5` starts a bare session and *then* fails on `No rule to make
+target 'gpt-5'`. To pass flags through, make it a function instead, which is the
+same thing with `ARGS` filled in:
+
+```sh
+claude-box() { make -f ~/git/claude-code-container/Makefile       ARGS="$*"; }
+codex-box()  { make -f ~/git/claude-code-container/Makefile codex ARGS="$*"; }
 ```
 
 Inside a clone, plain `make` does the same on the current directory:
 
 ```sh
 make            # Claude Code on the current directory
+make codex      # Codex instead, same image and same directory
 make shell      # bash instead
 make bench      # shell with the capabilities perf needs
 make prune      # reclaim the disk earlier builds are still holding
@@ -40,10 +53,13 @@ mounts `~/.gitconfig` read-only so commits are attributed, forwards
 `--shm-size=1g` — Docker's 64 MB default is where headless Chromium starts
 crashing on real pages, in ways that don't name the cause.
 
-Every run also checks for a newer Claude Code first. The install sits in the
-last Dockerfile layer, keyed on the npm registry's `latest` metadata, so the
-check is a cache hit down the whole file and costs a registry round trip;
-when a release has landed, that one npm layer rebuilds and nothing else does.
+Every run also checks for newer agents first. Claude Code and Codex each sit in
+a layer of their own at the end of the Dockerfile, keyed on that package's npm
+`latest` metadata, so the check is a cache hit down the whole file and costs two
+registry round trips. When a release has landed, only npm layers rebuild — the
+one that published and, since cache invalidation runs downwards, Codex's too if
+Claude Code is what moved. Two npm installs at worst, and nothing in the
+toolchain is compiled again.
 `make update` runs the check on its own, `make UPDATE=0` skips it for one run,
 and `make UPDATE_AGE=720` checks at most twice a day. A check that fails —
 no network, registry down — warns and starts the image that is already there.
@@ -57,10 +73,50 @@ that differ.
 
 ---
 
+## Two agents, one image
+
+Claude Code is the image's `ENTRYPOINT`; Codex is the same container with that
+entrypoint overridden, which is all `make codex` does. Same `/workspace` mount,
+same forwarded environment, same `/home/claude` volume — so `~/.claude` and
+`~/.codex` both survive `--rm` and neither agent asks you to log in twice.
+
+**Logging in.** `OPENAI_API_KEY` is forwarded from the host when set, exactly
+like `ANTHROPIC_API_KEY`. On a ChatGPT plan instead, note that a plain `codex
+login` wants to catch a browser redirect on `localhost:1455`, and the container
+publishes no such port. Two ways around it, both one-time because the result
+lands in `~/.codex/auth.json` in the home volume:
+
+```sh
+codex login --device-auth                             # code to enter elsewhere
+printenv OPENAI_API_KEY | codex login --with-api-key  # or just hand it a key
+```
+
+**Sandboxing works in here.** Codex sandboxes the commands it runs — Landlock
+and seccomp for `read-only`, bubblewrap for `workspace-write` — and it ships its
+own `bwrap` rather than wanting Debian's, so both modes work under the flags
+`make` already passes: no extra package, no added capability, no
+`seccomp=unconfined`. What it does depend on is `/workspace` being writable by
+the container user, which under rootless podman is the thing
+`--userns=keep-id` fixes (see [Rootless podman](#rootless-podman)). Without it
+bubblewrap fails as `bwrap: Can't mkdir /workspace/.agents: Permission denied`,
+which names neither uids nor the mount.
+
+`--dangerously-bypass-approvals-and-sandbox` is the counterpart of Claude
+Code's `--dangerously-skip-permissions` — and is documented upstream as being
+for externally sandboxed environments, which is what this container is:
+
+```sh
+make codex ARGS='--dangerously-bypass-approvals-and-sandbox'
+make codex ARGS='-s workspace-write -a on-request'   # or keep its sandbox
+```
+
+---
+
 ## What's in it
 
 | | |
 |---|---|
+| **Agents** | `claude` (Claude Code) and `codex` (Codex CLI), a layer each at the end of the build, so refreshing them never touches the toolchain below |
 | **Rust** | rustup stable, `rustfmt` `clippy` `rust-src` `rust-analyzer` `llvm-tools`; `mold` and `lld` linkers |
 | **Python** | 3.13 in a venv at `/opt/venv`, first on `PATH`; `uv` for everything else |
 | **R** | 4.5 with ~70 prebuilt `r-cran-*` packages; Posit binary mirror configured for the rest |

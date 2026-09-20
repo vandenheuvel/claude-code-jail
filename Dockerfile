@@ -2,9 +2,11 @@
 #
 # Claude Code workstation image.
 #
-# Goal: a container a Claude Code session can be dropped into and be immediately
+# Goal: a container a coding agent can be dropped into and be immediately
 # productive on Rust / Python / R projects, data analysis, web scraping and LLM
 # evaluation, without ever needing to stop and `apt-get install` mid-task.
+# Claude Code is the entrypoint; Codex is installed beside it and is one
+# --entrypoint away (`make codex`), sharing the toolchain and the home volume.
 #
 # Build knobs (see README for sizes):
 #   WITH_LATEX=0     drop the TeX Live layer
@@ -544,7 +546,8 @@ RUN userdel -r node 2>/dev/null || true; \
     useradd -m -u "$USER_UID" -g "$USER_GID" -s /bin/bash "$USERNAME"; \
     echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/90-$USERNAME"; \
     chmod 0440 "/etc/sudoers.d/90-$USERNAME"; \
-    mkdir -p /workspace "/home/$USERNAME/.claude" "/home/$USERNAME/.local/bin" \
+    mkdir -p /workspace "/home/$USERNAME/.claude" "/home/$USERNAME/.codex" \
+             "/home/$USERNAME/.local/bin" \
              "/home/$USERNAME/.config" "/home/$USERNAME/.cache" \
              /opt/uv-cache /opt/npm-cache; \
     chmod -R a+rwX /opt/uv-cache /opt/npm-cache; \
@@ -564,10 +567,15 @@ RUN git config --system --add safe.directory '*' \
 RUN printf 'export PATH=%s\n' "$PATH" > /etc/profile.d/10-claude-path.sh \
  && chmod 0644 /etc/profile.d/10-claude-path.sh
 
-# ---- Claude Code ------------------------------------------------------------
-# Last, because this is the layer that changes daily. ADD of the registry's
-# `latest` metadata makes the published version the cache key, so a rebuild
-# picks up a new release instead of silently serving a stale one.
+# ---- coding agents ----------------------------------------------------------
+# Claude Code and Codex, last and a layer each, because these are the layers
+# that change daily. ADD of the registry's `latest` metadata makes the published
+# version that layer's cache key, so a rebuild picks up a new release instead of
+# silently serving a stale one -- and the Makefile's start-up check is a cache
+# hit down the whole file until one of the two publishes. Cache invalidation
+# runs downwards, so Codex is the cheaper one to put last: a Codex release
+# rebuilds only its own layer, and a Claude Code release rebuilds both, which is
+# two npm installs and nothing else.
 #
 # --allow-scripts names the one package whose postinstall this image genuinely
 # depends on: it replaces bin/claude.exe with the native binary for the
@@ -586,8 +594,31 @@ RUN --mount=type=cache,target=/opt/npm-cache,sharing=locked,id=npm-${TARGETARCH}
  && rm /tmp/cc-latest.json \
  && chown -R "$USER_UID:$USER_GID" "/home/$USERNAME"
 
+# Codex takes no --allow-scripts, and that is a property of the package rather
+# than an omission: @openai/codex has no install scripts at all. The native
+# binary arrives as a per-platform optionalDependency -- linux-x64 and
+# linux-arm64 both exist, so this resolves on either architecture this image
+# builds for -- and bin/codex.js execs whichever one npm resolved. The stricter
+# npm default that the line above is written against therefore cannot affect
+# this install. `codex --version` still runs, for the same reason as above: it
+# is what distinguishes a resolved platform binary from a wrapper with nothing
+# behind it, and turns that into a failed build rather than a broken image.
+#
+# Nothing needs to be installed alongside it. Codex sandboxes the commands it
+# runs -- Landlock and seccomp for read-only, bubblewrap for workspace-write --
+# and ships its own `bwrap` under codex-resources rather than wanting Debian's.
+# Both modes work inside the container under the run flags the Makefile already
+# passes, with no added capability and no loosened seccomp profile.
+ADD https://registry.npmjs.org/@openai/codex/latest /tmp/codex-latest.json
+RUN --mount=type=cache,target=/opt/npm-cache,sharing=locked,id=npm-${TARGETARCH} \
+    npm install -g @openai/codex \
+ && codex --version \
+ && chmod -R a+rwX /opt/npm-global \
+ && rm /tmp/codex-latest.json \
+ && chown -R "$USER_UID:$USER_GID" "/home/$USERNAME"
+
 LABEL org.opencontainers.image.title="Claude Code workstation" \
-      org.opencontainers.image.description="Claude Code with Rust, Python, R, data analysis, scraping, LLM evaluation and a profiling/disassembly toolchain" \
+      org.opencontainers.image.description="Claude Code and Codex with Rust, Python, R, data analysis, scraping, LLM evaluation and a profiling/disassembly toolchain" \
       org.opencontainers.image.base.name="docker.io/library/node:26-trixie-slim"
 
 USER $USERNAME

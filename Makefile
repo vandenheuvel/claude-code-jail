@@ -1,10 +1,11 @@
 # Build and run the Claude Code workstation image.
 #
 #   make              Claude Code on the current directory (builds first if needed)
+#   make codex        Codex instead, same image and same directory
 #   make install      put a `claude-box` launcher on PATH, for use from anywhere
-#   make shell        bash in the image instead of Claude Code
+#   make shell        bash in the image instead of either agent
 #   make bench        shell with the capabilities perf and bpftrace need
-#   make update       refresh Claude Code (also checked before every run)
+#   make update       refresh both agents (also checked before every run)
 #   make prune        reclaim the disk earlier builds are still holding
 #   make help         everything else
 #
@@ -70,7 +71,9 @@ HOMEVOL ?= claude-home
 # Extra args appended to the run command, e.g. `make RUNARGS=--network=none`.
 RUNARGS ?=
 
-# Environment forwarded into the container when set on the host.
+# Environment forwarded into the container when set on the host. OPENAI_API_KEY
+# is Codex's API-key path; `codex login` instead writes ~/.codex/auth.json, which
+# is in the home volume and so survives --rm like the Claude Code login does.
 ENVPASS := ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL \
            CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX \
            AWS_PROFILE AWS_REGION GH_TOKEN GITHUB_TOKEN OPENAI_API_KEY \
@@ -82,11 +85,13 @@ ENVFLAGS = $(foreach v,$(ENVPASS),$(if $($(v)),-e $(v)))
 GITFLAGS := $(if $(wildcard $(HOME)/.gitconfig),-v $(HOME)/.gitconfig:/home/claude/.gitconfig:ro)
 
 # Start-up update check. The Dockerfile ends with an ADD of the registry's
-# `latest` metadata for Claude Code, so the published version is that layer's
-# cache key: re-running the build is a cache hit all the way down until a new
-# release appears, and only then does one npm layer rebuild. Nothing in the
-# toolchain is compiled again. UPDATE=0 skips the check for a single run;
-# UPDATE_AGE=N checks at most once every N minutes, remembered in a stamp file.
+# `latest` metadata for Claude Code and then for Codex, so each published version
+# is its own layer's cache key: re-running the build is a cache hit all the way
+# down until a new release appears, and only then do npm layers rebuild -- the
+# one that published, plus Codex's below it if Claude Code is what moved.
+# Nothing in the toolchain is compiled again. UPDATE=0 skips the check
+# for a single run; UPDATE_AGE=N checks at most once every N minutes, remembered
+# in a stamp file.
 UPDATE     ?= 1
 UPDATE_AGE ?= 0
 STAMPDIR   ?= $(HOME)/.cache/claude-box
@@ -112,11 +117,20 @@ RUN = $(ENGINE) run --rm $(TTYFLAGS) \
 
 .DEFAULT_GOAL := run
 .PHONY: run image home update check-update build slim minimal rebuild shell \
-        bench versions size install push pull prune clean help
+        codex bench versions size install push pull prune clean help
 
 ## run: Claude Code on $(WORK) -- the default target
 run: check-update home
 	$(RUN) $(REF) $(ARGS)
+
+## codex: Codex on $(WORK), in the same image and the same home volume
+# The image's ENTRYPOINT is `claude`, so the second agent is an override of it
+# rather than a second image -- same mounts, same forwarded environment, same
+# /home/claude, so both agents' logins and history sit in the one volume.
+# Codex sandboxes its own command execution and brings the bubblewrap it needs,
+# so unlike `bench` this target adds no capabilities and relaxes no seccomp.
+codex: check-update home
+	$(RUN) --entrypoint codex $(REF) $(ARGS)
 
 # Build only when the image is absent, so the first `make` is self-contained
 # and every later one starts in a second. `make build` forces a rebuild.
@@ -125,7 +139,7 @@ image:
 	  echo "==> $(REF) not found; building it once (this takes a while)"; \
 	  $(MAKE) -f $(THIS) build; }
 
-## update: pull a newer Claude Code into the image -- no full rebuild
+## update: pull newer agents into the image -- no full rebuild
 update:
 	$(MAKE) -f $(THIS) build
 
@@ -136,7 +150,7 @@ check-update: image
 ifneq ($(UPDATE),0)
 	@if [ "$(UPDATE_AGE)" -gt 0 ] 2>/dev/null \
 	   && [ -n "$$(find '$(STAMP)' -newermt '-$(UPDATE_AGE) minutes' 2>/dev/null)" ]; then :; else \
-	  echo "==> checking for a newer Claude Code (a moment, longer if there is one)"; \
+	  echo "==> checking for newer agents (a moment, longer if there is one)"; \
 	  if $(MAKE) -s -f $(THIS) build BUILDARGS=--quiet >/dev/null; then \
 	    mkdir -p '$(STAMPDIR)' && touch '$(STAMP)'; \
 	  else \
@@ -180,7 +194,7 @@ minimal: build
 rebuild: BUILDARGS += --no-cache --pull
 rebuild: build
 
-## shell: bash in the image instead of Claude Code
+## shell: bash in the image instead of either agent
 shell: check-update home
 	$(RUN) --entrypoint bash $(REF) $(ARGS)
 
@@ -212,7 +226,7 @@ install:
 # Deliberately `bash -c`, not `bash -lc`: Debian's /etc/profile overwrites PATH.
 versions: image
 	@$(ENGINE) run --rm --entrypoint bash $(REF) -c '\
-	  for c in "claude --version" "python3 --version" "rustc --version" \
+	  for c in "claude --version" "codex --version" "python3 --version" "rustc --version" \
 	           "Rscript --version" "node --version" "quarto --version" \
 	           "gh --version" "duckdb --version" "hyperfine --version" \
 	           "valgrind --version" "perf --version" \
@@ -277,7 +291,9 @@ help:
 	@echo
 	@echo "Examples:"
 	@echo "  make                                  Claude Code on the current directory"
+	@echo "  make codex                            Codex on the current directory"
 	@echo "  make ARGS='--dangerously-skip-permissions'"
+	@echo "  make codex ARGS='--dangerously-bypass-approvals-and-sandbox'"
 	@echo "  make WORK=~/src/myproject"
 	@echo "  make UPDATE=0                         start now, skip the update check"
 	@echo "  make UPDATE_AGE=720                   check at most twice a day"
