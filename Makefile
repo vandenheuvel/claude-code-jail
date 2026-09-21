@@ -97,8 +97,23 @@ else
   MASKFLAGS := --security-opt systempaths=unconfined
 endif
 
-# Directory to mount at /workspace.
+# Directory to mount, and where it appears inside the container. Both agents
+# key their per-project state on the working directory's path -- Claude Code
+# its session history, auto-memory and per-project settings, Codex the sessions
+# its `resume` picker offers -- so a fixed /workspace made every project the
+# same project: `--resume` listed the sessions of all of them, and memory
+# written in one was read back in the next. Mounting at the host path gives each
+# directory its own, and nesting that under /workspace keeps it clear of
+# anything the image owns: ~/src/foo is /workspace/home/you/src/foo.
+#
+# The shell normalises the path rather than $(abspath), which splits on spaces:
+# a relative WORK, or one with a trailing slash, still lands on the same
+# sessions as the plain absolute path.
+#
+# Sessions from before this are filed under /workspace itself, and
+# `claude-box WDIR=/workspace --resume` is how to get back to one.
 WORK    ?= $(CURDIR)
+WDIR    ?= /workspace$(shell cd -- "$(WORK)" 2>/dev/null && pwd)
 
 # Named volume for /home/claude, so credentials, ~/.claude settings, shell
 # history and cargo/uv caches survive `--rm`.
@@ -172,7 +187,7 @@ TTYFLAGS := $(shell [ -t 0 ] && echo -it || echo -i)
 #   make MASKFLAGS=        # keep the masks, lose both agents' sandboxes
 RUN = $(ENGINE) run --rm $(TTYFLAGS) \
         --shm-size=1g $(USERNS) $(MASKFLAGS) \
-        -v "$(WORK)":/workspace \
+        -v "$(WORK)":"$(WDIR)" -w "$(WDIR)" \
         -v $(HOMEVOL):/home/claude \
         $(GITFLAGS) $(ENVFLAGS) $(NETFLAGS) $(RUNARGS)
 
@@ -349,6 +364,7 @@ help:
 	@echo
 	@echo "Engine:    $(ENGINE)$(if $(IS_PODMAN), (rootless podman: keep-id + --format docker))"
 	@echo "Variables: IMAGE=$(IMAGE) WORK=$(WORK) HOMEVOL=$(HOMEVOL) BINDIR=$(BINDIR)"
+	@echo "           WDIR=$(WDIR) (WORK inside the container)"
 	@echo "           UPDATE=$(UPDATE) UPDATE_AGE=$(UPDATE_AGE) (start-up update check)"
 	@echo
 	@echo "Examples:"

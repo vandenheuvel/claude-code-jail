@@ -64,7 +64,7 @@ make help       # everything else
 
 The first run builds the image, creates the home volume and repairs that
 volume's ownership as needed; every later run skips straight to the last step.
-It mounts the target directory at `/workspace` (override with `WORK=`), keeps
+It mounts the target directory under `/workspace` (set it with `WORK=`), keeps
 `/home/claude` in a named volume so credentials and settings survive `--rm`,
 mounts `~/.gitconfig` read-only so commits are attributed, forwards
 `ANTHROPIC_API_KEY`, `GH_TOKEN` and friends when set on the host, and passes
@@ -73,6 +73,15 @@ crashing on real pages, in ways that don't name the cause. It also unmasks
 `/proc`, without which neither agent's sandbox can start; that one is a
 trade, and it is spelled out under
 [Two agents, one image](#two-agents-one-image).
+
+The mount point is `/workspace` plus the host path — `~/src/foo` is
+`/workspace/home/you/src/foo` — because both agents file per-project state under
+the working directory's path: Claude Code its session history, auto-memory and
+per-project settings, Codex the sessions its `resume` picker offers. With every
+project mounted at a bare `/workspace` they were all one project: `--resume`
+listed the sessions of every directory, and memory written in one was read back
+in the next. Sessions from before the change are still filed under
+`/workspace`, and `claude-box WDIR=/workspace --resume` gets back to them.
 
 Every run also checks for newer agents first. Claude Code and Codex each sit in
 a layer of their own at the end of the Dockerfile, keyed on that package's npm
@@ -97,7 +106,7 @@ that differ.
 ## Two agents, one image
 
 Claude Code is the image's `ENTRYPOINT`; Codex is the same container with that
-entrypoint overridden, which is all `make codex` does. Same `/workspace` mount,
+entrypoint overridden, which is all `make codex` does. Same project mount,
 same forwarded environment, same `/home/claude` volume — so `~/.claude` and
 `~/.codex` both survive `--rm` and neither agent asks you to log in twice.
 
@@ -121,8 +130,8 @@ implementation rather than two. `codex sandbox` is the cheapest way to see it
 working, no token spent on a model:
 
 ```sh
-codex sandbox -- touch /workspace/x                     # read-only: denied
-codex sandbox -c sandbox_mode=workspace-write -- touch /workspace/x
+codex sandbox -- touch x                     # read-only: denied
+codex sandbox -c sandbox_mode=workspace-write -- touch x
 ```
 
 That costs one flag, which `make` passes on every target as `MASKFLAGS`. A
@@ -141,11 +150,11 @@ podman the container user is an unprivileged host account, so an unmasked
 Docker's switch is the blunter of the two — it drops the read-only paths as
 well.
 
-The other thing the sandboxes depend on is `/workspace` being writable by the
-container user, which under rootless podman is what `--userns=keep-id` fixes
-(see [Rootless podman](#rootless-podman)). Without it bubblewrap fails as
-`bwrap: Can't mkdir /workspace/.agents: Permission denied`, which names neither
-uids nor the mount.
+The other thing the sandboxes depend on is the project mount being writable by
+the container user, which under rootless podman is what `--userns=keep-id`
+fixes (see [Rootless podman](#rootless-podman)). Without it bubblewrap fails as
+`bwrap: Can't mkdir /workspace/…/.agents: Permission denied`, which names
+neither uids nor the mount.
 
 `--dangerously-bypass-approvals-and-sandbox` is the counterpart of Claude
 Code's `--dangerously-skip-permissions` — and is documented upstream as being
@@ -376,11 +385,11 @@ rootless podman a handful of things differ, and each is a silent failure if
 left out.
 
 **Bind mounts.** Rootless podman maps your account to container uid 0 and every
-other container uid into your subuid range, so `/workspace` arrives root-owned
-and the `claude` user cannot write to it — Claude Code can read a project but
-not edit one file in it, with no error until the first write.
+other container uid into your subuid range, so a bind-mounted project arrives
+root-owned and the `claude` user cannot write to it — Claude Code can read a
+project but not edit one file in it, with no error until the first write.
 `--userns=keep-id:uid=1000,gid=1000` maps your account onto uid 1000 instead:
-`/workspace` becomes writable and new files land on the host owned by you.
+the project becomes writable and new files land on the host owned by you.
 
 **The build uid.** `USER_UID=$(id -u)` is the docker answer to the same problem
 and cannot work here: a host uid above the subuid range — 218189 against a

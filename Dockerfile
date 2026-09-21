@@ -642,8 +642,8 @@ RUN --mount=type=cache,target=/opt/npm-cache,sharing=locked,id=npm-${TARGETARCH}
 # passes, with no added capability and no loosened seccomp profile, and
 # `codex sandbox` shows it without spending a token on the model:
 #
-#   codex sandbox -- touch /workspace/x                     # read-only: denied
-#   codex sandbox -c sandbox_mode=workspace-write -- touch /workspace/x
+#   codex sandbox -- touch x                     # read-only: denied
+#   codex sandbox -c sandbox_mode=workspace-write -- touch x
 ADD https://registry.npmjs.org/@openai/codex/latest /tmp/codex-latest.json
 RUN --mount=type=cache,target=/opt/npm-cache,sharing=locked,id=npm-${TARGETARCH} \
     npm install -g @openai/codex \
