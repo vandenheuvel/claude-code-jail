@@ -608,6 +608,16 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache-${TARGE
 # rebuilds only its own layer, and a Claude Code release rebuilds both, which is
 # two npm installs and nothing else.
 #
+# Both layers then make the npm prefix writable for the container user with a
+# find rather than `chmod -R`, and that one choice is most of what an update
+# costs. chmod calls fchmodat on every file it visits, whether the mode changes
+# or not, and on the overlay filesystem a build runs on that copies the file up
+# into the layer being built. Over /opt/npm-global -- promptfoo alone is 2.6 GB
+# -- it made each of these layers a 3.7 GB copy of the whole npm tree, written
+# and committed twice for every Claude Code release. The find is a+rwX spelled
+# as a test, a missing rw bit or a directory or executable missing an x bit, so
+# it touches only what npm just unpacked and each layer is the size of its agent.
+#
 # --allow-scripts names the one package whose postinstall this image genuinely
 # depends on: it replaces bin/claude.exe with the native binary for the
 # platform. npm 11.19 still runs unreviewed install scripts and only warns
@@ -621,7 +631,9 @@ ADD https://registry.npmjs.org/@anthropic-ai/claude-code/latest /tmp/cc-latest.j
 RUN --mount=type=cache,target=/opt/npm-cache,sharing=locked,id=npm-${TARGETARCH} \
     npm install -g --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code \
  && claude --version \
- && chmod -R a+rwX /opt/npm-global \
+ && find /opt/npm-global ! -type l \
+      \( ! -perm -0666 -o \( -type d -o -perm /0111 \) ! -perm -0111 \) \
+      -exec chmod a+rwX {} + \
  && rm /tmp/cc-latest.json \
  && chown -R "$USER_UID:$USER_GID" "/home/$USERNAME"
 
@@ -648,7 +660,9 @@ ADD https://registry.npmjs.org/@openai/codex/latest /tmp/codex-latest.json
 RUN --mount=type=cache,target=/opt/npm-cache,sharing=locked,id=npm-${TARGETARCH} \
     npm install -g @openai/codex \
  && codex --version \
- && chmod -R a+rwX /opt/npm-global \
+ && find /opt/npm-global ! -type l \
+      \( ! -perm -0666 -o \( -type d -o -perm /0111 \) ! -perm -0111 \) \
+      -exec chmod a+rwX {} + \
  && rm /tmp/codex-latest.json \
  && chown -R "$USER_UID:$USER_GID" "/home/$USERNAME"
 

@@ -156,6 +156,13 @@ STAMPDIR   ?= $(HOME)/.cache/claude-box
 STAMP      := $(STAMPDIR)/updated-$(subst :,_,$(subst /,_,$(REF)))
 
 BUILDARGS ?=
+
+# check-update reads the build's log to show how far along it is (see
+# build-progress.sh), and needs it one line per event. podman's always is.
+# BuildKit's is too when written into a pipe, but only by default, and a
+# BUILDKIT_PROGRESS in the environment would change it, so it is asked for.
+PLAIN   := $(if $(IS_PODMAN),,--progress=plain)
+
 BUILD = DOCKER_BUILDKIT=1 $(ENGINE) build $(FORMAT) \
           --build-arg USER_UID=$(BUILD_UID) --build-arg USER_GID=$(BUILD_GID) \
           $(BUILDARGS) -t $(REF) $(CTX)
@@ -223,12 +230,17 @@ update:
 # The same check, quiet and throttled, in front of every session. It must never
 # be the reason the container will not start: a flight with no network, or a
 # registry hiccup, warns and runs the image that is already here.
+#
+# Quiet means no build log, not no sign of life. build-progress.sh reads the
+# log and keeps one line redrawn in place: the step, and how long it has been.
+# Nothing stays on screen unless a step misses the cache, and then what does is
+# how many steps are left to rebuild and, at the end, how long it took.
 check-update: image
 ifneq ($(UPDATE),0)
 	@if [ "$(UPDATE_AGE)" -gt 0 ] 2>/dev/null \
 	   && [ -n "$$(find '$(STAMP)' -newermt '-$(UPDATE_AGE) minutes' 2>/dev/null)" ]; then :; else \
-	  echo "==> checking for newer agents (a moment, longer if there is one)"; \
-	  if $(MAKE) -s -f $(THIS) build BUILDARGS=--quiet >/dev/null; then \
+	  echo "==> checking for newer agents"; \
+	  if $(CTX)/build-progress.sh $(MAKE) -s -f $(THIS) build BUILDARGS=$(PLAIN); then \
 	    mkdir -p '$(STAMPDIR)' && touch '$(STAMP)'; \
 	  else \
 	    echo "==> update check failed; starting the image as it is"; \

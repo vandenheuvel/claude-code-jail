@@ -89,7 +89,10 @@ a layer of their own at the end of the Dockerfile, keyed on that package's npm
 registry round trips. When a release has landed, only npm layers rebuild — the
 one that published and, since cache invalidation runs downwards, Codex's too if
 Claude Code is what moved. Two npm installs at worst, and nothing in the
-toolchain is compiled again.
+toolchain is compiled again. While the check runs, one line redrawn in place
+shows the step it is on and the time so far. When a release has landed, that
+line becomes a bar across the steps being rebuilt, and the update ends by saying
+how long it took. A check that finds nothing leaves nothing on screen.
 `make update` runs the check on its own, `make UPDATE=0` skips it for one run,
 and `make UPDATE_AGE=720` checks at most twice a day. A check that fails —
 no network, registry down — warns and starts the image that is already there.
