@@ -2,6 +2,7 @@
 #
 #   make              Claude Code on the current directory (builds first if needed)
 #   make codex        Codex instead, same image and same directory
+#   make lean         Claude Code with the Lean tools on for this directory
 #   make install      put a `claude-box` launcher on PATH, for use from anywhere
 #   make shell        bash in the image instead of either agent
 #   make bench        shell with the capabilities perf and bpftrace need
@@ -57,6 +58,9 @@ ifeq ($(IS_PODMAN),podman)
   # `pipefail` from every RUN in the build, which is exactly the masking that
   # SHELL line exists to prevent.
   FORMAT    := --format docker
+  # A subdirectory of an image mount (see LEANFLAGS): absolute to podman,
+  # relative to docker, and under a different name.
+  SUBPATH   := subpath=/
 
   # Rootless podman networks the container with pasta, which builds the
   # namespace by copying the host's default-route interface: its address, and
@@ -95,6 +99,7 @@ else
   FORMAT    :=
   PASTAFIX  :=
   MASKFLAGS := --security-opt systempaths=unconfined
+  SUBPATH   := image-subpath=
 endif
 
 # Directory to mount, and where it appears inside the container. Both agents
@@ -141,6 +146,30 @@ ENVFLAGS = $(foreach v,$(ENVPASS),$(if $($(v)),-e $(v)))
 # Host git identity, read-only. Without it every commit Claude Code makes fails
 # on an unset user.email.
 GITFLAGS := $(if $(wildcard $(HOME)/.gitconfig),-v $(HOME)/.gitconfig:/home/claude/.gitconfig:ro)
+
+# The Lean image (lean/Dockerfile): a toolchain, Mathlib built on it, the REPL
+# and the Lean plugins. Once it exists, every container gets it mounted
+# read-only at /opt/lean, and its toolchain a second time where the main image's
+# elan looks for one. It is mounted rather than layered in because of the copy
+# rootless podman makes of each new image under keep-id: an image mount is
+# neither remapped nor copied, while Mathlib as a layer made that copy 29 GB and
+# 555,000 files rather than 18 GB, after every Claude Code update.
+#
+# LEANTC is the toolchain as elan names it, leanprover/lean4:v4.34.0, read off
+# the image's label; elan keeps it in leanprover--lean4---v4.34.0. Recursive
+# `=`, so the inspect runs only when a recipe that starts a container expands
+# it, which is after `lean-image` has built the image it reads. No Lean image,
+# no mounts, and everything but Lean works as before. The flags are a function
+# of their own because a comma inside $(if ...) splits its arguments, and every
+# --mount is full of them.
+LEANREF     := $(IMAGE)-lean:$(TAG)
+MATHLIB_REV ?=
+LEANTC       = $(shell $(ENGINE) image inspect $(LEANREF) \
+                 --format '{{index .Config.Labels "org.claude-box.lean-toolchain"}}' 2>/dev/null)
+leanmount    = --mount type=image,source=$(LEANREF),target=/opt/lean \
+               --mount type=image,source=$(LEANREF),target=/opt/elan/toolchains/$(1),$(SUBPATH)toolchains/$(1)
+leanflags    = $(if $(1),$(call leanmount,$(1)))
+LEANFLAGS    = $(call leanflags,$(subst :,---,$(subst /,--,$(LEANTC))))
 
 # Start-up update check. The Dockerfile ends with an ADD of the registry's
 # `latest` metadata for Claude Code and then for Codex, so each published version
@@ -196,11 +225,12 @@ RUN = $(ENGINE) run --rm $(TTYFLAGS) \
         --shm-size=1g $(USERNS) $(MASKFLAGS) \
         -v "$(WORK)":"$(WDIR)" -w "$(WDIR)" \
         -v $(HOMEVOL):/home/claude \
-        $(GITFLAGS) $(ENVFLAGS) $(NETFLAGS) $(RUNARGS)
+        $(GITFLAGS) $(ENVFLAGS) $(NETFLAGS) $(LEANFLAGS) $(RUNARGS)
 
 .DEFAULT_GOAL := run
 .PHONY: run image home update check-update build slim minimal rebuild shell \
-        codex bench versions size install push pull prune clean help
+        codex lean lean-image lean-update bench versions size install push pull \
+        prune clean help
 
 ## run: Claude Code on $(WORK) -- the default target
 run: check-update home
@@ -215,6 +245,40 @@ run: check-update home
 # capability and relaxes no seccomp profile.
 codex: check-update home
 	$(RUN) --entrypoint codex $(REF) $(ARGS)
+
+## lean: Claude Code on $(WORK) with the Lean tools on, after lean-init there
+# lean-init makes the directory a Lean project on the Lean image's prebuilt
+# Mathlib and enables the Lean plugins for it, in its .claude/settings.local.json.
+# So this target is only needed once per directory: plain `make` there keeps
+# them from then on, and every other directory never loads them. The first one
+# anywhere builds the Lean image.
+lean: lean-image check-update home
+	$(RUN) --entrypoint bash $(REF) -c 'lean-init && exec claude "$$@"' claude $(ARGS)
+
+# The Lean image, built only when it is absent, as `image` is.
+lean-image:
+	@$(ENGINE) image inspect $(LEANREF) >/dev/null 2>&1 || { \
+	  echo "==> $(LEANREF) not found; building it once (Mathlib: this takes a while)"; \
+	  $(MAKE) -f $(THIS) lean-update; }
+
+## lean-update: rebuild the Lean image on the newest Mathlib release, or MATHLIB_REV
+# The newest v4.* tag that is not a release candidate, and the toolchain it pins,
+# are looked up here rather than in the build because the toolchain has to end
+# up in a label (see LEANTC), and a label can only come from a build arg. The
+# same rev twice is a cache hit, so this is also the cheap way to ask whether
+# there is a newer Mathlib. Nothing runs it for you: check-update leaves the
+# Lean image alone, so Mathlib never moves under the projects linked to it.
+lean-update:
+	@rev='$(MATHLIB_REV)'; \
+	 [ -n "$$rev" ] || rev=$$(git ls-remote --tags --refs \
+	     https://github.com/leanprover-community/mathlib4 'v4.*' \
+	   | sed 's|.*/||' | grep -vE -- '-rc' | sort -V | tail -n1); \
+	 tc=$$(curl -fsSL "https://raw.githubusercontent.com/leanprover-community/mathlib4/$$rev/lean-toolchain"); \
+	 [ -n "$$rev" ] && [ -n "$$tc" ] || { echo "could not resolve Mathlib $$rev" >&2; exit 1; }; \
+	 echo "==> Mathlib $$rev on $$tc"; \
+	 DOCKER_BUILDKIT=1 $(ENGINE) build $(FORMAT) \
+	   --build-arg MATHLIB_REV="$$rev" --build-arg LEAN_TOOLCHAIN="$$tc" \
+	   -t $(LEANREF) $(CTX)/lean
 
 # Build only when the image is absent, so the first `make` is self-contained
 # and every later one starts in a second. `make build` forces a rebuild.
@@ -273,10 +337,10 @@ build:
 slim: BUILDARGS += --build-arg WITH_LATEX=0 --build-arg WITH_GHIDRA=0 --build-arg WITH_BROWSERS=0
 slim: build
 
-## minimal: languages and core CLI only -- no LaTeX, R, browser, Quarto or Ghidra
+## minimal: languages and core CLI only -- no LaTeX, R, browser, Quarto, Ghidra or Lean
 minimal: BUILDARGS += --build-arg WITH_LATEX=0 --build-arg WITH_R=0 \
                       --build-arg WITH_BROWSERS=0 --build-arg WITH_QUARTO=0 \
-                      --build-arg WITH_GHIDRA=0
+                      --build-arg WITH_GHIDRA=0 --build-arg WITH_LEAN=0
 minimal: build
 
 ## rebuild: build ignoring the layer cache
@@ -314,12 +378,13 @@ install:
 ## versions: print the versions of the headline tools
 # Deliberately `bash -c`, not `bash -lc`: Debian's /etc/profile overwrites PATH.
 versions: image
-	@$(ENGINE) run --rm --entrypoint bash $(REF) -c '\
+	@$(ENGINE) run --rm $(LEANFLAGS) --entrypoint bash $(REF) -c '\
 	  for c in "claude --version" "codex --version" "python3 --version" "rustc --version" \
 	           "Rscript --version" "node --version" "quarto --version" \
 	           "gh --version" "duckdb --version" "hyperfine --version" \
 	           "valgrind --version" "perf --version" "bwrap --version" \
-	           "chromium --version" "playwright --version"; do \
+	           "chromium --version" "playwright --version" \
+	           "lean --version" "lake --version" "lean-lsp-mcp --version"; do \
 	    printf "%-22s %s\n" "$${c%% *}" "$$($$c 2>&1 | head -n1)"; \
 	  done'
 
@@ -363,11 +428,11 @@ prune:
 	 $(ENGINE) image prune -f; \
 	 echo "==> free on $$root: $$before -> $$(free)"
 
-## clean: remove the image and the persistent home volume
+## clean: remove both images and the persistent home volume
 # The home volume holds the container's Claude Code login. Removing it means
 # logging in again on the next run.
 clean:
-	-$(ENGINE) rmi $(REF)
+	-$(ENGINE) rmi $(REF) $(LEANREF)
 	-$(ENGINE) volume rm $(HOMEVOL)
 
 help:
@@ -382,6 +447,8 @@ help:
 	@echo "Examples:"
 	@echo "  make                                  Claude Code on the current directory"
 	@echo "  make codex                            Codex on the current directory"
+	@echo "  make lean                             Claude Code with the Lean tools on"
+	@echo "  make lean-update MATHLIB_REV=v4.33.0  the Lean image on another Mathlib"
 	@echo "  make ARGS='--dangerously-skip-permissions'"
 	@echo "  make codex ARGS='--dangerously-bypass-approvals-and-sandbox'"
 	@echo "  make WORK=~/src/myproject"

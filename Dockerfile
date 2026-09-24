@@ -17,6 +17,8 @@
 #   WITH_TORCH=1     add CPU-only PyTorch + transformers
 #   WITH_GHIDRA=0    drop Ghidra's headless decompiler and the JDK it needs
 #   WITH_AMC=0       drop auto-multiple-choice (WITH_LATEX=0 drops it too)
+#   WITH_LEAN=0      drop elan, lean-lsp-mcp and the lean skill (Mathlib itself
+#                    is a separate image, lean/Dockerfile, built by `make lean`)
 #   USER_UID/USER_GID  match your host account so bind mounts stay writable
 #
 # `node:26-slim` resolves to Debian 13 "trixie". Pinned explicitly: every apt
@@ -533,6 +535,62 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache-${TARGE
         auto-multiple-choice libopenoffice-oodoc-perl libyaml-syck-perl; \
     fi
 
+# ---- Lean 4 ------------------------------------------------------------------
+# Only the small half of Lean lives in this image. The toolchain, Mathlib built
+# on it, the Lean REPL and the Lean plugins are a second image, built from
+# lean/Dockerfile by `make lean` and mounted read-only at /opt/lean -- mounted
+# rather than layered in here because of the chown'd copy rootless podman makes
+# of every new image under keep-id, which Mathlib made 11 GB and 150,000 files
+# bigger, after every Claude Code update; lean/Dockerfile has the rest of that. What is here is what
+# every container needs whether or not that image is mounted:
+#
+# - elan, with no toolchain of its own. The Makefile mounts the Lean image's
+#   toolchain at /opt/elan/toolchains/<its name>, which is where elan looks for
+#   it and where it sat when Mathlib was built. The default toolchain is
+#   `claude-box`, a link through /opt/lean/toolchain to that same one, so `lean`
+#   outside a project is the Mathlib one too, whatever its version. /opt/elan
+#   stays writable: elan records the projects it runs in, and a project pinning
+#   some other Lean can still have elan fetch it, for the life of the container.
+#
+# - lean-lsp-mcp, the MCP server that gives an agent goal states, diagnostics,
+#   multi-tactic attempts and Mathlib search. It goes in a uv tool environment
+#   of its own, because its pinned `mcp` would fight the eval packages in
+#   /opt/venv. It reaches Claude Code as the lean-lsp plugin, off unless a
+#   project turns it on: it adds 3 kB of server instructions, 23 tools and a
+#   process to every session it is on in. lean4-skills, the prove/review/golf
+#   workflow, is the other plugin, in the Lean image, and costs 3 kB of command
+#   descriptions plus hooks on every prompt and every Bash call. `lean-init`
+#   enables both at local scope, for the one directory it ran in.
+#
+# - the `lean` skill, which is on by default -- 166 characters of description
+#   in the skill listing, no process, no hook -- so that a session asked to
+#   prove something knows all this is here and runs lean-init rather than
+#   installing elan. It goes in the managed-settings directory, the one place
+#   Claude Code reads skills from that /home/claude, a volume, cannot shadow.
+#
+# The two files come in by name rather than the whole of lean/, which is mostly
+# the Lean image's build context: editing that should not rebuild this image.
+ARG WITH_LEAN=1
+ENV ELAN_HOME=/opt/elan
+ENV PATH=/opt/elan/bin:$PATH
+RUN --mount=type=bind,source=lean/lean-init,target=/tmp/lean-init \
+    --mount=type=bind,source=lean/SKILL.md,target=/tmp/lean-SKILL.md \
+    --mount=type=cache,target=/opt/uv-cache,sharing=locked,id=uv-${TARGETARCH} \
+    if [ "$WITH_LEAN" = "1" ]; then \
+      curl -fsSL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+        | sh -s -- -y --no-modify-path --default-toolchain none; \
+      mkdir -p /opt/elan/toolchains; \
+      ln -s /opt/lean/toolchain /opt/elan/toolchains/claude-box; \
+      elan default claude-box; \
+      chmod -R a+rwX /opt/elan; \
+      UV_TOOL_DIR=/opt/uv-tools UV_TOOL_BIN_DIR=/usr/local/bin \
+        uv tool install --python /usr/bin/python3 lean-lsp-mcp; \
+      lean-lsp-mcp --version; \
+      chmod -R a+rX /opt/uv-tools; \
+      install -m 0755 /tmp/lean-init /usr/local/bin/lean-init; \
+      install -D -m 0644 /tmp/lean-SKILL.md /etc/claude-code/.claude/skills/lean/SKILL.md; \
+    fi
+
 # ---- non-root user ----------------------------------------------------------
 # Claude Code refuses --dangerously-skip-permissions while running as root,
 # which is exactly the mode an unattended container wants. Pass USER_UID and
@@ -667,7 +725,7 @@ RUN --mount=type=cache,target=/opt/npm-cache,sharing=locked,id=npm-${TARGETARCH}
  && chown -R "$USER_UID:$USER_GID" "/home/$USERNAME"
 
 LABEL org.opencontainers.image.title="Claude Code workstation" \
-      org.opencontainers.image.description="Claude Code and Codex with Rust, Python, R, data analysis, scraping, LLM evaluation and a profiling/disassembly toolchain" \
+      org.opencontainers.image.description="Claude Code and Codex with Rust, Python, R, Lean 4 and Mathlib, data analysis, scraping, LLM evaluation and a profiling/disassembly toolchain" \
       org.opencontainers.image.base.name="docker.io/library/node:26-trixie-slim"
 
 USER $USERNAME

@@ -56,6 +56,7 @@ Inside a clone, plain `make` does the same on the current directory:
 ```sh
 make            # Claude Code on the current directory
 make codex      # Codex instead, same image and same directory
+make lean       # Claude Code with the Lean tools on for this directory
 make shell      # bash instead
 make bench      # shell with the capabilities perf needs
 make prune      # reclaim the disk earlier builds are still holding
@@ -184,6 +185,7 @@ make codex ARGS='-s workspace-write -a on-request'   # or keep its sandbox
 | **R packages** | survival analysis and resampling: `tidyverse` `data.table` `survival` `prodlim` `pec` `riskregression` `cmprsk` `timereg` `survminer` `survey` `quantreg` `glmnet` `ranger` `mgcv` `lme4` `Rcpp` `RcppArmadillo` `RcppEigen`; `testthat` `tinytest` `lintr` `covr` `bench` `microbenchmark` `profvis` |
 | **Scraping** | `httpx[http2]` `requests` `curl-cffi` `beautifulsoup4` `lxml` `selectolax` `parsel` `trafilatura` `feedparser` `scrapy` `pypdf` |
 | **Browsers** | Chromium on `PATH` plus chromedriver; Playwright for Python *and* for JS/TS, each with its Chromium already in `/opt/playwright`; `shot-scraper` `pytest-playwright` `selenium`; `xvfb` and CJK/emoji fonts |
+| **Lean** | Lean 4 via elan, the newest Mathlib release already built, the Lean REPL, `lean-lsp-mcp`, and the lean4-skills workflow; `lean-init` to start a project on it. Mathlib is a companion image that `make lean` builds. See [Lean proofs](#lean-proofs) |
 | **LLM eval** | `anthropic` `openai` `litellm` `tiktoken` `tokenizers` `huggingface-hub` `datasets`; harnesses `inspect-ai` (Python) and `promptfoo` (CLI) |
 | **Documents** | pandoc, Quarto, full TeX Live (`latexmk` `biber` `xetex` `luatex`), graphviz, gnuplot, ghostscript, poppler, qpdf, ImageMagick, ffmpeg, librsvg; `auto-multiple-choice` for multiple-choice exams marked from scans |
 | **CLI** | `rg` `fd` `bat` `fzf` `delta` `gh` `git-lfs` `just` `direnv` `entr` `tmux` `parallel` `moreutils` `shellcheck` `shfmt` `ctags` `github-latest` `bwrap`, and passwordless `sudo` |
@@ -236,6 +238,71 @@ hand-rolled `docker run` wants the same flag, or `--disable-dev-shm-usage`.
 **Fonts.** DejaVu, Liberation, Noto, Noto CJK and colour emoji are installed, so
 a screenshot of a non-Latin page is text rather than a row of tofu boxes. A page
 using a webfont still needs `--wait-for 'document.fonts.ready'`.
+
+---
+
+## Lean proofs
+
+Lean 4 and Mathlib come prebuilt, so a proof attempt starts with
+`import Mathlib` working rather than a 7 GB download and an elan install.
+
+```sh
+mkdir ~/proofs/putnam-a1 && cd ~/proofs/putnam-a1
+claude-box lean            # lean-init here, then Claude Code
+claude-box lean-update     # later: move to the newest Mathlib release
+```
+
+The toolchain, the built Mathlib, the Lean REPL and the two plugins are a
+second image, `claude-code-lean`, built from `lean/Dockerfile` by the first
+`claude-box lean` (about 11 GB). It is never run. Once it exists, every
+container gets it mounted read-only at `/opt/lean`, and its toolchain a second
+time under `/opt/elan/toolchains`, where elan looks. A mount costs a session
+nothing, and nothing in the main image changes when Mathlib does, or the other
+way round. `check-update` never touches the Lean image, so Mathlib only moves
+when you run `lean-update`, with `MATHLIB_REV=v4.33.0` to pick a tag other than
+the newest release.
+
+Why a second image and not a layer: under rootless podman, the first container
+from each new image is preceded by a chown'd copy of the whole image (see
+[Rootless podman](#rootless-podman)), and as a layer Mathlib made that copy 11 GB
+and 150,000 files bigger, after every Claude Code update. An image mount is the
+image's own layers, neither copied nor remapped.
+
+`lean-init` turns the directory into a Lake project on the prebuilt Mathlib in
+`/opt/lean/project`. It copies the lakefile and manifest and links
+`.lake/packages` there, so every problem gets a directory of its own without a
+Mathlib of its own. An existing Lake project keeps its own files; if it pins a
+different Mathlib, `lake exe cache get` fetches that one as usual. After a
+`lean-update`, running `claude-box lean` again in a directory lean-init set up
+moves it to the new Mathlib, unless you have edited its lakefile, in which case
+it says so and leaves that to you.
+
+The Claude Code half is two plugins from a marketplace in the Lean image, and
+both stay off unless a directory turns them on:
+
+| | Every session | Where it is on |
+|---|---|---|
+| `lean` skill | 166 characters of skill description; no process, no hook | everywhere, so a session asked to prove something knows all this is here |
+| `lean-lsp@claude-box` | lean-lsp-mcp: 3 kB of server instructions, 23 tools and a process | directories `lean-init` ran in |
+| `lean4@claude-box` | lean4-skills: 3 kB of command descriptions, hooks on every prompt and Bash call | directories `lean-init` ran in |
+
+`lean-init` enables the plugins at local scope, in the directory's
+`.claude/settings.local.json`, so after `claude-box lean` has run once, plain
+`claude-box` in that directory loads them too. The setting is for that exact
+path, not its subdirectories. A session that runs `lean-init` itself, because it
+was asked to prove something, has to wait for `/reload-plugins`, which only you
+can type. Until then it works through `lake env lean` from Bash, which the skill
+says how to do.
+
+What the plugins add: `lean_goal`, `lean_multi_attempt` (several tactics at
+one spot, through the REPL), `lean_diagnostic_messages`, `lean_local_search`,
+`lean_verify` (which axioms a theorem rests on), and rate-limited remote search
+through LeanSearch, Loogle, Lean Finder and premise search. lean4-skills adds
+`/lean4:prove`, `/lean4:autoprove`, `/lean4:formalize` and the rest of its
+workflow.
+
+`WITH_LEAN=0` leaves the Lean part of the main image out as well: elan,
+`lean-lsp-mcp`, `lean-init` and the skill.
 
 ---
 
@@ -303,7 +370,8 @@ Everything optional is a build arg, all default to on except `WITH_TORCH`:
 cargo tooling), `WITH_BROWSERS` (Chromium and both Playwrights, around 2 GB of
 which 1.7 GB is browser), `WITH_QUARTO`, `WITH_GHIDRA` (Ghidra and its JDK),
 `WITH_AMC` (auto-multiple-choice, which depends on TeX Live and so also goes
-with `WITH_LATEX=0`).
+with `WITH_LATEX=0`), `WITH_LEAN` (elan, `lean-lsp-mcp` and the `lean` skill;
+Mathlib itself is the [Lean image](#lean-proofs)).
 `WITH_TORCH=1` adds CPU PyTorch, `transformers`, `accelerate` and
 `sentence-transformers` — left out by default because most evaluation here is
 API-side and it costs about a gigabyte. Also `RUST_VERSION=` (default `stable`)
@@ -400,6 +468,15 @@ and cannot work here: a host uid above the subuid range — 218189 against a
 to inside a rootless build, so that layer fails with `chown: changing ownership
 of '/workspace': Invalid argument`. The image is built at uid 1000 and the
 mapping happens at run time, where it belongs.
+
+**The copy before the first run.** Native overlay cannot shift ownership for a
+rootless user, so keep-id needs its own copy of every image: before the first
+container from a new image starts, podman mounts the whole stack and chowns
+every file through overlayfs, which copies each one up into a single flattened
+layer. That is a copy of about 18 GB after every rebuild, Claude Code updates
+included, and it is why Lean's 11 GB is a [separate image](#lean-proofs),
+mounted rather than layered in. The copies are also why `make prune` matters
+more here than under docker.
 
 **Image format.** podman builds OCI format by default, and there the
 Dockerfile's `SHELL` directive is ignored with only a warning — silently

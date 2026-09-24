@@ -10,6 +10,7 @@
 #   claude-box --dangerously-skip-permissions
 #   claude-box codex -m gpt-5                 a target first, then the agent's flags
 #   claude-box shell                          bash instead
+#   claude-box lean                           Claude Code with the Lean tools on
 #   claude-box WORK=/home/you/src/other       a make variable, exactly as make takes it
 #   claude-box help                           every target
 #
@@ -32,7 +33,7 @@ MAKEFILE='@MAKEFILE@'
 
 # Every target in that Makefile's .PHONY, surrounded by spaces so the case
 # below matches whole words only.
-TARGETS=' run image home update check-update build slim minimal rebuild shell codex bench versions size install push pull prune clean help '
+TARGETS=' run image home update check-update build slim minimal rebuild shell codex lean lean-image lean-update bench versions size install push pull prune clean help '
 
 # Wrap a word in single quotes for re-evaluation, with any single quote inside
 # broken out: don't -> 'don'\''t'.
