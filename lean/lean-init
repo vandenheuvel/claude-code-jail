@@ -1,0 +1,108 @@
+#!/bin/bash
+# lean-init [DIR]
+#
+# Make DIR (default: the current directory) a Lean 4 project on the Lean
+# image's prebuilt Mathlib, and switch the Lean plugins on for Claude Code
+# sessions started in it. Safe to run again; it only adds what is missing.
+#
+# The Lean image is mounted read-only at /opt/lean by the Makefile, in every
+# container once `make lean` has built it.
+#
+#   no Lake project yet     lakefile, toolchain and manifest are copied from
+#                           /opt/lean/project, and .lake/packages is linked to
+#                           its already-built packages: `import Mathlib` works
+#                           at once, with nothing downloaded or compiled
+#   linked, but to an       what `make lean-update` leaves behind: the link now
+#   older Mathlib           reaches a Mathlib the manifest does not pin. When the
+#                           lakefile is still the one lean-init wrote, all three
+#                           files are brought up to the image's; otherwise that
+#                           is reported and left to you
+#   an existing project     its Lake files are left alone. When it pins exactly
+#                           the Mathlib the image has, its packages are linked
+#                           the same way; otherwise `lake exe cache get` is its
+#                           own business, as it would be anywhere else
+#
+# Then, unless LEAN_INIT_NO_CLAUDE=1, the image's two Lean plugins are
+# installed and enabled at local scope -- .claude/settings.local.json in DIR --
+# so they load in sessions started there and nowhere else. A session that is
+# already running picks them up on /reload-plugins.
+set -euo pipefail
+
+TEMPLATE=/opt/lean/project
+MARKETPLACE=/opt/lean/plugins
+PLUGINS=(lean-lsp@claude-box lean4@claude-box)
+
+say() { printf 'lean-init: %s\n' "$*"; }
+die() { printf 'lean-init: %s\n' "$*" >&2; exit 1; }
+
+[ -d "$TEMPLATE/.lake/packages/mathlib" ] \
+  || die "no Lean image mounted at /opt/lean; start the session with \`claude-box lean\`, which builds it the first time"
+
+dir="${1:-.}"
+mkdir -p -- "$dir"
+cd -- "$dir"
+
+rev_of() { jq -r '.packages[] | select(.name == "mathlib") | .inputRev // .rev' "$1"; }
+
+# Every package the project pins must be in the image at the same revision,
+# or linking would hand it a dependency tree it did not ask for.
+same_packages() {
+  jq -e --slurpfile t "$TEMPLATE/lake-manifest.json" '
+    ($t[0].packages | map({(.name): .rev}) | add) as $have
+    | .packages | length > 0 and all(.[]; $have[.name] == .rev)' \
+    lake-manifest.json >/dev/null 2>&1
+}
+
+link_packages() {
+  mkdir -p .lake
+  ln -sfn "$TEMPLATE/.lake/packages" .lake/packages
+  if [ -e .gitignore ] && grep -qE '^/?\.lake/?$' .gitignore; then :; else
+    echo '/.lake/' >> .gitignore
+  fi
+}
+
+# The lakefile with every rev blanked out, so that one lean-init wrote for an
+# older Mathlib compares equal to the template's.
+shape() { sed -E 's/^rev = .*/rev = ""/' "$1"; }
+
+if [ -L .lake/packages ] && [ "$(readlink .lake/packages)" = "$TEMPLATE/.lake/packages" ]; then
+  if same_packages; then
+    say "already on the image's Mathlib $(rev_of lake-manifest.json)"
+  elif [ -e lakefile.toml ] && [ "$(shape lakefile.toml)" = "$(shape "$TEMPLATE/lakefile.toml")" ]; then
+    old="$(rev_of lake-manifest.json 2>/dev/null || echo '?')"
+    cp "$TEMPLATE/lean-toolchain" "$TEMPLATE/lakefile.toml" "$TEMPLATE/lake-manifest.json" .
+    say "moved from Mathlib $old to the image's $(rev_of lake-manifest.json) ($(cat lean-toolchain))"
+  else
+    say "linked to the image's Mathlib $(rev_of "$TEMPLATE/lake-manifest.json"), but this project pins $(rev_of lake-manifest.json 2>/dev/null || echo '?')"
+    say "and its lakefile is not the one lean-init wrote; bring its revs, lean-toolchain and lake-manifest.json in line with $TEMPLATE"
+  fi
+elif [ ! -e lakefile.toml ] && [ ! -e lakefile.lean ]; then
+  [ ! -e lean-toolchain ] && [ ! -e lake-manifest.json ] \
+    || die "lean-toolchain or lake-manifest.json without a lakefile; not touching them"
+  cp "$TEMPLATE/lean-toolchain" "$TEMPLATE/lakefile.toml" "$TEMPLATE/lake-manifest.json" .
+  [ -e Proof.lean ] || printf '%s\n' \
+    'import Mathlib' '' \
+    '-- `lake build` checks this file and anything under Proof/.' \
+    '-- Any other .lean file here is checked with `lake env lean File.lean`.' > Proof.lean
+  link_packages
+  say "created a Lean project on Mathlib $(rev_of lake-manifest.json) ($(cat lean-toolchain))"
+elif [ -e lake-manifest.json ] && [ ! -e .lake/packages ] && same_packages; then
+  link_packages
+  say "linked this project's packages to the image's Mathlib $(rev_of lake-manifest.json)"
+else
+  say "existing Lake project left as it is (Mathlib $(rev_of lake-manifest.json 2>/dev/null || echo '?'), image has $(rev_of "$TEMPLATE/lake-manifest.json"))"
+  say "fetch its prebuilt Mathlib with \`lake exe cache get\` -- never build Mathlib from source"
+fi
+
+[ "${LEAN_INIT_NO_CLAUDE:-0}" = 1 ] && exit 0
+command -v claude >/dev/null || exit 0
+
+claude plugin marketplace add "$MARKETPLACE" >/dev/null
+for p in "${PLUGINS[@]}"; do
+  claude plugin install "$p" --scope local >/dev/null
+  claude plugin enable "$p" --scope local >/dev/null 2>&1 || true
+done
+claude plugin list 2>/dev/null | grep -A3 -F -e "${PLUGINS[0]}" -e "${PLUGINS[1]}" \
+  | grep -q 'disabled' && die "a Lean plugin is still disabled here; see \`claude plugin list\`"
+say "Claude Code: ${PLUGINS[*]} enabled for $(pwd)"
+say "a session already running here loads them on /reload-plugins"

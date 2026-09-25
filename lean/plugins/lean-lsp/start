@@ -1,0 +1,9 @@
+#!/bin/sh
+# The lean-lsp plugin's MCP server. start.py does the work, in lean-lsp-mcp's
+# own Python environment, which is found through the command uv put on PATH.
+#
+# plugin.json runs this by its path in the image, not through
+# ${CLAUDE_PLUGIN_ROOT}: Claude Code runs a plugin from a copy it made at
+# install, which a newer Lean image does not update.
+py="$(dirname "$(readlink -f "$(command -v lean-lsp-mcp)")")/python"
+exec "$py" "$(dirname "$0")/start.py"

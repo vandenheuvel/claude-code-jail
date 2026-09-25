@@ -17,8 +17,9 @@
 #   WITH_TORCH=1     add CPU-only PyTorch + transformers
 #   WITH_GHIDRA=0    drop Ghidra's headless decompiler and the JDK it needs
 #   WITH_AMC=0       drop auto-multiple-choice (WITH_LATEX=0 drops it too)
-#   WITH_LEAN=0      drop elan, lean-lsp-mcp and the lean skill (Mathlib itself
-#                    is a separate image, lean/Dockerfile, built by `make lean`)
+#   WITH_LEAN=0      drop elan, lean-lsp-mcp, loogle and the lean skill (Mathlib
+#                    itself is a separate image, lean/Dockerfile, built by
+#                    `make lean`)
 #   USER_UID/USER_GID  match your host account so bind mounts stay writable
 #
 # `node:26-slim` resolves to Debian 13 "trixie". Pinned explicitly: every apt
@@ -562,19 +563,25 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache-${TARGE
 #   descriptions plus hooks on every prompt and every Bash call. `lean-init`
 #   enables both at local scope, for the one directory it ran in.
 #
+# - `loogle`, Mathlib search by name, type pattern or subterm from the shell,
+#   on the Loogle and index the Lean image builds. It is the same search as the
+#   plugin's lean_loogle, for Codex and for a session whose plugins have not
+#   loaded yet.
+#
 # - the `lean` skill, which is on by default -- 166 characters of description
 #   in the skill listing, no process, no hook -- so that a session asked to
 #   prove something knows all this is here and runs lean-init rather than
 #   installing elan. It goes in the managed-settings directory, the one place
 #   Claude Code reads skills from that /home/claude, a volume, cannot shadow.
 #
-# The two files come in by name rather than the whole of lean/, which is mostly
+# The three files come in by name rather than the whole of lean/, which is mostly
 # the Lean image's build context: editing that should not rebuild this image.
 ARG WITH_LEAN=1
 ENV ELAN_HOME=/opt/elan
 ENV PATH=/opt/elan/bin:$PATH
 RUN --mount=type=bind,source=lean/lean-init,target=/tmp/lean-init \
     --mount=type=bind,source=lean/SKILL.md,target=/tmp/lean-SKILL.md \
+    --mount=type=bind,source=lean/loogle,target=/tmp/loogle \
     --mount=type=cache,target=/opt/uv-cache,sharing=locked,id=uv-${TARGETARCH} \
     if [ "$WITH_LEAN" = "1" ]; then \
       curl -fsSL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
@@ -588,6 +595,7 @@ RUN --mount=type=bind,source=lean/lean-init,target=/tmp/lean-init \
       lean-lsp-mcp --version; \
       chmod -R a+rX /opt/uv-tools; \
       install -m 0755 /tmp/lean-init /usr/local/bin/lean-init; \
+      install -m 0755 /tmp/loogle /usr/local/bin/loogle; \
       install -D -m 0644 /tmp/lean-SKILL.md /etc/claude-code/.claude/skills/lean/SKILL.md; \
     fi
 

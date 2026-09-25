@@ -1,0 +1,13 @@
+{
+  "name": "lean-lsp",
+  "description": "lean-lsp-mcp: goal states, diagnostics, multi-attempt and Mathlib search for Lean 4, as MCP tools",
+  "mcpServers": {
+    "lean-lsp": {
+      "command": "/opt/lean/plugins/lean-lsp/start",
+      "env": {
+        "LEAN_REPL": "true",
+        "LEAN_LOG_LEVEL": "WARNING"
+      }
+    }
+  }
+}

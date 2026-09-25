@@ -1,0 +1,21 @@
+{
+  "name": "claude-box",
+  "owner": { "name": "claude-box image" },
+  "metadata": {
+    "description": "Plugins baked into the claude-box image. Both are off until a project turns them on, which is what lean-init does."
+  },
+  "plugins": [
+    {
+      "name": "lean-lsp",
+      "source": "./lean-lsp",
+      "description": "lean-lsp-mcp: goal states, diagnostics, multi-attempt and Mathlib search for Lean 4, as MCP tools",
+      "defaultEnabled": false
+    },
+    {
+      "name": "lean4",
+      "source": "./lean4-skills/plugins/lean4",
+      "description": "cameronfreer/lean4-skills: /lean4:prove, /lean4:autoprove, /lean4:formalize and the rest of the proving workflow",
+      "defaultEnabled": false
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+#!/bin/sh
+# loogle [OPTIONS] QUERY...
+#
+# Loogle from the shell: Mathlib's declarations by name, type pattern or
+# subterm. It is the same search as lean-lsp-mcp's lean_loogle, for a session
+# that has not loaded the Lean plugins yet, or for Codex.
+#
+#   loogle Real.sqrt                        declarations that mention it
+#   loogle '"succ_le"'                      names containing a substring
+#   loogle 'Real.sqrt ?a * Real.sqrt ?a'    a subterm anywhere in the type
+#   loogle '(?a → ?b) → List ?a → List ?b'  a function type, arguments in any order
+#   loogle '⊢ _ < _ → tsum _ < tsum _'      the conclusion, hypotheses in any order
+#   loogle 'Finset.sum, _ ^ 2'              every filter at once
+#
+# It searches the Lean image's Mathlib from the index built with it, 20 hits
+# per query unless --max-results says otherwise. Each call loads Mathlib first,
+# 6 s with the files cached and 25 s without, so ask several queries in one
+# call rather than one call each.
+set -eu
+LOOGLE=/opt/lean/loogle
+
+[ -x "$LOOGLE/.lake/build/bin/loogle" ] || {
+  echo "loogle: no prebuilt Loogle in the Lean image at /opt/lean" >&2
+  echo "loogle: start the session with \`claude-box lean\`; an image built before Loogle needs \`claude-box lean-update\`" >&2
+  exit 1
+}
+exec lake -d /opt/lean/project env "$LOOGLE/.lake/build/bin/loogle" \
+  --index-mode read --index-file "$LOOGLE/mathlib.idx" --max-results 20 "$@"

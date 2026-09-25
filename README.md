@@ -185,7 +185,7 @@ make codex ARGS='-s workspace-write -a on-request'   # or keep its sandbox
 | **R packages** | survival analysis and resampling: `tidyverse` `data.table` `survival` `prodlim` `pec` `riskregression` `cmprsk` `timereg` `survminer` `survey` `quantreg` `glmnet` `ranger` `mgcv` `lme4` `Rcpp` `RcppArmadillo` `RcppEigen`; `testthat` `tinytest` `lintr` `covr` `bench` `microbenchmark` `profvis` |
 | **Scraping** | `httpx[http2]` `requests` `curl-cffi` `beautifulsoup4` `lxml` `selectolax` `parsel` `trafilatura` `feedparser` `scrapy` `pypdf` |
 | **Browsers** | Chromium on `PATH` plus chromedriver; Playwright for Python *and* for JS/TS, each with its Chromium already in `/opt/playwright`; `shot-scraper` `pytest-playwright` `selenium`; `xvfb` and CJK/emoji fonts |
-| **Lean** | Lean 4 via elan, the newest Mathlib release already built, the Lean REPL, `lean-lsp-mcp`, and the lean4-skills workflow; `lean-init` to start a project on it. Mathlib is a companion image that `make lean` builds. See [Lean proofs](#lean-proofs) |
+| **Lean** | Lean 4 via elan, the newest Mathlib release already built, the Lean REPL, `lean-lsp-mcp`, Loogle with its index of Mathlib, and the lean4-skills workflow; `lean-init` to start a project on it. Mathlib is a companion image that `make lean` builds. See [Lean proofs](#lean-proofs) |
 | **LLM eval** | `anthropic` `openai` `litellm` `tiktoken` `tokenizers` `huggingface-hub` `datasets`; harnesses `inspect-ai` (Python) and `promptfoo` (CLI) |
 | **Documents** | pandoc, Quarto, full TeX Live (`latexmk` `biber` `xetex` `luatex`), graphviz, gnuplot, ghostscript, poppler, qpdf, ImageMagick, ffmpeg, librsvg; `auto-multiple-choice` for multiple-choice exams marked from scans |
 | **CLI** | `rg` `fd` `bat` `fzf` `delta` `gh` `git-lfs` `just` `direnv` `entr` `tmux` `parallel` `moreutils` `shellcheck` `shfmt` `ctags` `github-latest` `bwrap`, and passwordless `sudo` |
@@ -252,8 +252,8 @@ claude-box lean            # lean-init here, then Claude Code
 claude-box lean-update     # later: move to the newest Mathlib release
 ```
 
-The toolchain, the built Mathlib, the Lean REPL and the two plugins are a
-second image, `claude-code-lean`, built from `lean/Dockerfile` by the first
+The toolchain, the built Mathlib, the Lean REPL, Loogle and the two plugins are
+a second image, `claude-code-lean`, built from `lean/Dockerfile` by the first
 `claude-box lean` (about 11 GB). It is never run. Once it exists, every
 container gets it mounted read-only at `/opt/lean`, and its toolchain a second
 time under `/opt/elan/toolchains`, where elan looks. A mount costs a session
@@ -283,7 +283,7 @@ both stay off unless a directory turns them on:
 | | Every session | Where it is on |
 |---|---|---|
 | `lean` skill | 166 characters of skill description; no process, no hook | everywhere, so a session asked to prove something knows all this is here |
-| `lean-lsp@claude-box` | lean-lsp-mcp: 3 kB of server instructions, 23 tools and a process | directories `lean-init` ran in |
+| `lean-lsp@claude-box` | lean-lsp-mcp: 3 kB of server instructions, 23 tools and a process; Loogle is a second one, started by the first search | directories `lean-init` ran in |
 | `lean4@claude-box` | lean4-skills: 3 kB of command descriptions, hooks on every prompt and Bash call | directories `lean-init` ran in |
 
 `lean-init` enables the plugins at local scope, in the directory's
@@ -296,13 +296,31 @@ says how to do.
 
 What the plugins add: `lean_goal`, `lean_multi_attempt` (several tactics at
 one spot, through the REPL), `lean_diagnostic_messages`, `lean_local_search`,
-`lean_verify` (which axioms a theorem rests on), and rate-limited remote search
-through LeanSearch, Loogle, Lean Finder and premise search. lean4-skills adds
-`/lean4:prove`, `/lean4:autoprove`, `/lean4:formalize` and the rest of its
-workflow.
+`lean_verify` (which axioms a theorem rests on), `lean_loogle`, and
+rate-limited remote search through LeanSearch, Lean Finder and premise search.
+lean4-skills adds `/lean4:prove`, `/lean4:autoprove`, `/lean4:formalize` and the
+rest of its workflow.
+
+Loogle, which finds Mathlib lemmas by name, subterm or the shape of their
+statement, runs locally: the Lean image builds it with an index of its Mathlib
+(620 MB of the image). `lean_loogle` uses it in any directory whose packages
+lean-init linked to the image, with no limit; elsewhere it goes to
+loogle.lean-lang.org, which lean-lsp-mcp allows 3 queries per 30 seconds. The
+plugin's launcher, `lean/plugins/lean-lsp/start.py`, points lean-lsp-mcp at the
+prebuilt copy, which lean-lsp-mcp would otherwise clone, build and index for
+itself, per directory. It also has Loogle start at the first search rather than
+with the session: a session that never searches pays nothing, and the first
+search waits 6 seconds, 25 with nothing cached, and holds about 0.5 GB of
+memory of its own, plus Mathlib's files mapped, which the Lean server maps too.
+The same search works from the shell, where Codex and a session whose plugins
+have not loaded can use it:
+
+```sh
+loogle 'Real.sqrt ?a * Real.sqrt ?a' '⊢ _ < _ → tsum _ < tsum _' '"succ_le"'
+```
 
 `WITH_LEAN=0` leaves the Lean part of the main image out as well: elan,
-`lean-lsp-mcp`, `lean-init` and the skill.
+`lean-lsp-mcp`, `lean-init`, `loogle` and the skill.
 
 ---
 
@@ -370,8 +388,8 @@ Everything optional is a build arg, all default to on except `WITH_TORCH`:
 cargo tooling), `WITH_BROWSERS` (Chromium and both Playwrights, around 2 GB of
 which 1.7 GB is browser), `WITH_QUARTO`, `WITH_GHIDRA` (Ghidra and its JDK),
 `WITH_AMC` (auto-multiple-choice, which depends on TeX Live and so also goes
-with `WITH_LATEX=0`), `WITH_LEAN` (elan, `lean-lsp-mcp` and the `lean` skill;
-Mathlib itself is the [Lean image](#lean-proofs)).
+with `WITH_LATEX=0`), `WITH_LEAN` (elan, `lean-lsp-mcp`, `loogle` and the `lean`
+skill; Mathlib itself is the [Lean image](#lean-proofs)).
 `WITH_TORCH=1` adds CPU PyTorch, `transformers`, `accelerate` and
 `sentence-transformers` — left out by default because most evaluation here is
 API-side and it costs about a gigabyte. Also `RUST_VERSION=` (default `stable`)
