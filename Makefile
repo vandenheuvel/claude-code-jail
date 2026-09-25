@@ -143,6 +143,13 @@ ENVPASS := ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL \
            HF_TOKEN http_proxy https_proxy no_proxy
 ENVFLAGS = $(foreach v,$(ENVPASS),$(if $($(v)),-e $(v)))
 
+# Remote Control, which claude-start turns on for every Claude Code session,
+# names a session after the machine it runs on, and inside a container that is
+# the container's random id. It gets the host's name instead, as a session
+# outside the container would, unless the host sets
+# CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX itself.
+RCFLAGS := -e CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX="$(or $(CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX),$(shell uname -n))"
+
 # Host git identity, read-only. Without it every commit Claude Code makes fails
 # on an unset user.email.
 GITFLAGS := $(if $(wildcard $(HOME)/.gitconfig),-v $(HOME)/.gitconfig:/home/claude/.gitconfig:ro)
@@ -225,7 +232,7 @@ RUN = $(ENGINE) run --rm $(TTYFLAGS) \
         --shm-size=1g $(USERNS) $(MASKFLAGS) \
         -v "$(WORK)":"$(WDIR)" -w "$(WDIR)" \
         -v $(HOMEVOL):/home/claude \
-        $(GITFLAGS) $(ENVFLAGS) $(NETFLAGS) $(LEANFLAGS) $(RUNARGS)
+        $(GITFLAGS) $(ENVFLAGS) $(RCFLAGS) $(NETFLAGS) $(LEANFLAGS) $(RUNARGS)
 
 .DEFAULT_GOAL := run
 .PHONY: run image home update check-update build slim minimal rebuild shell \
@@ -237,7 +244,7 @@ run: check-update home
 	$(RUN) $(REF) $(ARGS)
 
 ## codex: Codex on $(WORK), in the same image and the same home volume
-# The image's ENTRYPOINT is `claude`, so the second agent is an override of it
+# The image's ENTRYPOINT is Claude Code, so the second agent is an override of it
 # rather than a second image -- same mounts, same forwarded environment, same
 # /home/claude, so both agents' logins and history sit in the one volume.
 # Codex sandboxes its own command execution and needs nothing here to do it
@@ -253,7 +260,7 @@ codex: check-update home
 # them from then on, and every other directory never loads them. The first one
 # anywhere builds the Lean image.
 lean: lean-image check-update home
-	$(RUN) --entrypoint bash $(REF) -c 'lean-init && exec claude "$$@"' claude $(ARGS)
+	$(RUN) --entrypoint bash $(REF) -c 'lean-init && exec claude-start "$$@"' claude $(ARGS)
 
 # The Lean image, built only when it is absent, as `image` is.
 lean-image:

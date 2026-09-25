@@ -1,0 +1,43 @@
+#!/bin/sh
+# claude-start [CLAUDE ARGS...]
+#
+# The image's entrypoint: Claude Code, once the defaults this image gives it are
+# in the user settings of the home volume. Each one is written only while its
+# key is absent, so a choice made later in /config, which writes the same file,
+# is kept. Picking "default" there deletes the key, and the image's default
+# comes back at the next start.
+#
+#   remoteControlAtStartup: true   Remote Control in every session, so that a
+#                                  session in a container can be picked up from
+#                                  claude.ai or the Claude app.
+#
+# It has to be user settings. Claude Code ignores `true` for this key in project
+# and local settings, while managed settings and --settings outrank user
+# settings, so /config could not turn it off. `false` in a project's
+# .claude/settings.local.json turns it off for that directory alone.
+#
+# An older Claude Code kept this setting in ~/.claude.json, and a value found
+# there counts as a choice already made.
+#
+# None of this may keep Claude Code from starting: a settings file jq cannot
+# read is left as it is, and Claude Code reports it.
+settings="$HOME/.claude/settings.json"
+
+unset_everywhere() {
+  ! jq -e --arg k "$1" 'has($k)' "$settings" >/dev/null 2>&1 \
+    && ! jq -e --arg k "$1" 'has($k)' "$HOME/.claude.json" >/dev/null 2>&1
+}
+
+# Written back through the file rather than moved over it, which keeps its mode
+# and, should it be one, its symlink.
+default() {
+  unset_everywhere "$1" || return 0
+  mkdir -p "${settings%/*}" && { [ -s "$settings" ] || echo '{}' > "$settings"; } \
+    && tmp="$(mktemp)" \
+    && { jq --arg k "$1" --argjson v "$2" '.[$k] = $v' "$settings" > "$tmp" \
+           && cat "$tmp" > "$settings"; rm -f "$tmp"; }
+}
+
+default remoteControlAtStartup true 2>/dev/null
+
+exec claude "$@"

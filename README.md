@@ -75,6 +75,18 @@ crashing on real pages, in ways that don't name the cause. It also unmasks
 trade, and it is spelled out under
 [Two agents, one image](#two-agents-one-image).
 
+Every Claude Code session in the box starts with Remote Control on, so it can
+be picked up from claude.ai/code or the Claude app. The image's entrypoint,
+`claude-start`, writes `"remoteControlAtStartup": true` into
+`~/.claude/settings.json` in the home volume whenever that key is missing, and
+leaves it alone otherwise. So switching "Enable Remote Control for all sessions"
+off in `/config` keeps it off, and `"remoteControlAtStartup": false` in a
+project's `.claude/settings.local.json` turns it off for that directory alone.
+Sessions are named after the host rather than the container's random hostname;
+set `CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX` on the host to name them
+something else. Remote Control needs a claude.ai login; with an API key there is
+nothing to connect.
+
 The mount point is `/workspace` plus the host path — `~/src/foo` is
 `/workspace/home/you/src/foo` — because both agents file per-project state under
 the working directory's path: Claude Code its session history, auto-memory and

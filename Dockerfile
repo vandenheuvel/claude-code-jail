@@ -5,8 +5,9 @@
 # Goal: a container a coding agent can be dropped into and be immediately
 # productive on Rust / Python / R projects, data analysis, web scraping and LLM
 # evaluation, without ever needing to stop and `apt-get install` mid-task.
-# Claude Code is the entrypoint; Codex is installed beside it and is one
-# --entrypoint away (`make codex`), sharing the toolchain and the home volume.
+# Claude Code is the entrypoint, through claude-start, which sets its defaults
+# (Remote Control on); Codex is installed beside it and is one --entrypoint
+# away (`make codex`), sharing the toolchain and the home volume.
 #
 # Build knobs (see README for sizes):
 #   WITH_LATEX=0     drop the TeX Live layer
@@ -732,10 +733,18 @@ RUN --mount=type=cache,target=/opt/npm-cache,sharing=locked,id=npm-${TARGETARCH}
  && rm /tmp/codex-latest.json \
  && chown -R "$USER_UID:$USER_GID" "/home/$USERNAME"
 
+# ---- entrypoint -------------------------------------------------------------
+# claude-start writes the image's defaults for Claude Code into the user
+# settings in the home volume, each only while it is unset there, and then
+# execs claude. So far there is one: Remote Control in every session. It comes
+# in after the agents, so that editing it rebuilds this layer and nothing else.
+RUN --mount=type=bind,source=claude-start,target=/tmp/claude-start \
+    install -m 0755 /tmp/claude-start /usr/local/bin/claude-start
+
 LABEL org.opencontainers.image.title="Claude Code workstation" \
       org.opencontainers.image.description="Claude Code and Codex with Rust, Python, R, Lean 4 and Mathlib, data analysis, scraping, LLM evaluation and a profiling/disassembly toolchain" \
       org.opencontainers.image.base.name="docker.io/library/node:26-trixie-slim"
 
 USER $USERNAME
 WORKDIR /workspace
-ENTRYPOINT ["claude"]
+ENTRYPOINT ["claude-start"]
