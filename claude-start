@@ -1,22 +1,31 @@
 #!/bin/sh
 # claude-start [CLAUDE ARGS...]
 #
-# The image's entrypoint: Claude Code, once the defaults this image gives it are
-# in the user settings of the home volume. Each one is written only while its
-# key is absent, so a choice made later in /config, which writes the same file,
-# is kept. Picking "default" there deletes the key, and the image's default
-# comes back at the next start.
+# The image's entrypoint: Claude Code with --dangerously-skip-permissions, once
+# the defaults this image gives it are in the user settings of the home volume.
+#
+# The flag is always passed, so no session in the box stops to ask before it
+# runs a command or edits a file; the container is the sandbox. Passing it again
+# does no harm, and subcommands (`mcp list`, `doctor`) take it too.
+#
+# The defaults are each written only while their key is absent, so a choice made
+# later in /config, which writes the same file, is kept. Picking "default" there
+# deletes the key, and the image's default comes back at the next start.
 #
 #   remoteControlAtStartup: true   Remote Control in every session, so that a
 #                                  session in a container can be picked up from
 #                                  claude.ai or the Claude app.
+#   skipDangerousModePermissionPrompt: true
+#                                  the bypass-permissions warning taken as
+#                                  accepted, since declining it only exits.
 #
-# It has to be user settings. Claude Code ignores `true` for this key in project
-# and local settings, while managed settings and --settings outrank user
-# settings, so /config could not turn it off. `false` in a project's
-# .claude/settings.local.json turns it off for that directory alone.
+# It has to be user settings. Claude Code ignores `true` for
+# remoteControlAtStartup in project and local settings, while managed settings
+# and --settings outrank user settings, so /config could not turn it off.
+# `false` in a project's .claude/settings.local.json turns it off for that
+# directory alone.
 #
-# An older Claude Code kept this setting in ~/.claude.json, and a value found
+# An older Claude Code kept these settings in ~/.claude.json, and a value found
 # there counts as a choice already made.
 #
 # None of this may keep Claude Code from starting: a settings file jq cannot
@@ -39,5 +48,10 @@ default() {
 }
 
 default remoteControlAtStartup true 2>/dev/null
+default skipDangerousModePermissionPrompt true 2>/dev/null
 
-exec claude "$@"
+# Claude Code exits on the flag under uid 0 unless IS_SANDBOX=1 says the root is
+# a sandbox's, which under `--user root` it is.
+[ "$(id -u)" != 0 ] || export IS_SANDBOX=1
+
+exec claude --dangerously-skip-permissions "$@"

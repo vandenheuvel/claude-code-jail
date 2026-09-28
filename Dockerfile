@@ -5,9 +5,10 @@
 # Goal: a container a coding agent can be dropped into and be immediately
 # productive on Rust / Python / R projects, data analysis, web scraping and LLM
 # evaluation, without ever needing to stop and `apt-get install` mid-task.
-# Claude Code is the entrypoint, through claude-start, which sets its defaults
-# (Remote Control on); Codex is installed beside it and is one --entrypoint
-# away (`make codex`), sharing the toolchain and the home volume.
+# Claude Code is the entrypoint, through claude-start, which starts it with
+# --dangerously-skip-permissions and sets its defaults (Remote Control on);
+# Codex is installed beside it and is one --entrypoint away (`make codex`),
+# sharing the toolchain and the home volume.
 #
 # Build knobs (see README for sizes):
 #   WITH_LATEX=0     drop the TeX Live layer
@@ -602,9 +603,9 @@ RUN --mount=type=bind,source=lean/lean-init,target=/tmp/lean-init \
 
 # ---- non-root user ----------------------------------------------------------
 # Claude Code refuses --dangerously-skip-permissions while running as root,
-# which is exactly the mode an unattended container wants. Pass USER_UID and
-# USER_GID matching the host account so bind-mounted work stays writable on
-# both sides; the Makefile does this by default.
+# and claude-start always passes it. Pass USER_UID and USER_GID matching the
+# host account so bind-mounted work stays writable on both sides; the Makefile
+# does this by default.
 ARG USER_UID=1000
 ARG USER_GID=1000
 RUN userdel -r node 2>/dev/null || true; \
@@ -736,7 +737,8 @@ RUN --mount=type=cache,target=/opt/npm-cache,sharing=locked,id=npm-${TARGETARCH}
 # ---- entrypoint -------------------------------------------------------------
 # claude-start writes the image's defaults for Claude Code into the user
 # settings in the home volume, each only while it is unset there, and then
-# execs claude. So far there is one: Remote Control in every session. It comes
+# execs claude --dangerously-skip-permissions. The defaults: Remote Control in
+# every session, and the bypass-permissions warning taken as accepted. It comes
 # in after the agents, so that editing it rebuilds this layer and nothing else.
 RUN --mount=type=bind,source=claude-start,target=/tmp/claude-start \
     install -m 0755 /tmp/claude-start /usr/local/bin/claude-start

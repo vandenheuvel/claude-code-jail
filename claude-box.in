@@ -7,7 +7,6 @@
 #
 #   claude-box                                Claude Code on the current directory
 #   claude-box -p 'what does this build?'     its flags, passed through
-#   claude-box --dangerously-skip-permissions
 #   claude-box codex -m gpt-5                 a target first, then the agent's flags
 #   claude-box shell                          bash instead
 #   claude-box lean                           Claude Code with the Lean tools on

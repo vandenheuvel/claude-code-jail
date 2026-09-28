@@ -456,7 +456,7 @@ help:
 	@echo "  make codex                            Codex on the current directory"
 	@echo "  make lean                             Claude Code with the Lean tools on"
 	@echo "  make lean-update MATHLIB_REV=v4.33.0  the Lean image on another Mathlib"
-	@echo "  make ARGS='--dangerously-skip-permissions'"
+	@echo "  make ARGS=--continue                  the last session in this directory"
 	@echo "  make codex ARGS='--dangerously-bypass-approvals-and-sandbox'"
 	@echo "  make WORK=~/src/myproject"
 	@echo "  make UPDATE=0                         start now, skip the update check"

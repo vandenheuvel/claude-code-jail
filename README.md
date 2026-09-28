@@ -75,13 +75,22 @@ crashing on real pages, in ways that don't name the cause. It also unmasks
 trade, and it is spelled out under
 [Two agents, one image](#two-agents-one-image).
 
-Every Claude Code session in the box starts with Remote Control on, so it can
-be picked up from claude.ai/code or the Claude app. The image's entrypoint,
-`claude-start`, writes `"remoteControlAtStartup": true` into
-`~/.claude/settings.json` in the home volume whenever that key is missing, and
-leaves it alone otherwise. So switching "Enable Remote Control for all sessions"
-off in `/config` keeps it off, and `"remoteControlAtStartup": false` in a
-project's `.claude/settings.local.json` turns it off for that directory alone.
+Every Claude Code session in the box runs with `--dangerously-skip-permissions`:
+it never stops to ask before running a command or editing a file, since the
+container is the sandbox. The entrypoint, `claude-start`, always passes the
+flag, and writes `"skipDangerousModePermissionPrompt": true` into
+`~/.claude/settings.json` so the one-time warning about it doesn't come up —
+declining that warning would only exit. What a session can reach is what the
+container can: the mounted directory, the home volume, the network, the tokens
+forwarded from the host (`GH_TOKEN` included), and passwordless `sudo`.
+
+Every Claude Code session also starts with Remote Control on, so it can be
+picked up from claude.ai/code or the Claude app. `claude-start` writes
+`"remoteControlAtStartup": true` into `~/.claude/settings.json` in the home
+volume whenever that key is missing, and leaves it alone otherwise. So
+switching "Enable Remote Control for all sessions" off in `/config` keeps it
+off, and `"remoteControlAtStartup": false` in a project's
+`.claude/settings.local.json` turns it off for that directory alone.
 Sessions are named after the host rather than the container's random hostname;
 set `CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX` on the host to name them
 something else. Remote Control needs a claude.ai login; with an API key there is
@@ -455,9 +464,10 @@ project rather than globally, where it surprises build scripts.
 regardless of who owns them on the host. `delta` is the pager.
 
 **Not root.** The container runs as `claude` with passwordless `sudo`, which is
-what makes `claude --dangerously-skip-permissions` usable — Claude Code refuses
-that flag under uid 0. `--user root` is available if you need it, but pass
-`-e HOME=/root` with it.
+what makes `--dangerously-skip-permissions` usable — Claude Code refuses that
+flag under uid 0. `--user root` is available if you need it, but pass
+`-e HOME=/root` with it; `claude-start` then sets `IS_SANDBOX=1`, which is how
+Claude Code is told that a root user is a sandbox's.
 
 **Login shells.** Debian's `/etc/profile` overwrites `PATH`, dropping
 `/opt/venv`, cargo, npm-global and quarto from any `bash -l`, `su -` or ssh in —
