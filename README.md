@@ -114,7 +114,9 @@ Claude Code is what moved. Two npm installs at worst, and nothing in the
 toolchain is compiled again. While the check runs, one line redrawn in place
 shows the step it is on and the time so far. When a release has landed, that
 line becomes a bar across the steps being rebuilt, and the update ends by saying
-how long it took. A check that finds nothing leaves nothing on screen.
+how long it took. A check that finds nothing leaves nothing on screen. The
+version an update replaced is pruned in the background while the session
+starts (see [Build options](#build-options)).
 `make update` runs the check on its own, `make UPDATE=0` skips it for one run,
 and `make UPDATE_AGE=720` checks at most twice a day. A check that fails —
 no network, registry down — warns and starts the image that is already there.
@@ -281,7 +283,9 @@ time under `/opt/elan/toolchains`, where elan looks. A mount costs a session
 nothing, and nothing in the main image changes when Mathlib does, or the other
 way round. `check-update` never touches the Lean image, so Mathlib only moves
 when you run `lean-update`, with `MATHLIB_REV=v4.33.0` to pick a tag other than
-the newest release.
+the newest release. The Lean image it replaces stays until `make prune`: unlike
+the main image, it is not pruned automatically, because a mounted image is not
+protected from a prune and a running Lean session would lose it.
 
 Why a second image and not a layer: under rootless podman, the first container
 from each new image is preceded by a chown'd copy of the whole image (see
@@ -425,15 +429,27 @@ make size                                  # per-layer breakdown
 make prune                                 # collect the images earlier builds left
 ```
 
-That last one matters more than it looks. A rebuild that changes one layer
-leaves the whole previous image behind, untagged and complete — twenty-odd
-gigabytes — and under rootless podman there is a second, ID-mapped copy of each
-image beside it, so one stale build can be sitting on 40 GB. Nothing collects
-them on its own, and a disk filled that way does not announce itself as a disk
+A rebuild that changes one layer leaves the whole previous image behind,
+untagged and complete — twenty-odd gigabytes — and under rootless podman there
+is a second, ID-mapped copy of each image beside it, so one stale build can be
+sitting on 40 GB. A disk filled that way does not announce itself as a disk
 problem: it surfaces as an `npm install` that half-unpacks a package, or a chown
 that stops mid-layer, in a build step with no visible connection to the cause.
-`make prune` takes only untagged images that no container is using — the tagged
-image, the home volume and the BuildKit caches all stay.
+
+So every build, and every `make pull`, ends by pruning the versions of the image
+it replaced, in the background: the session an update was checked for starts
+without waiting on the delete. Only untagged images with this image's title
+label go, so other projects' are left alone, and only ones no container is
+running from. A version a session is still using is collected by the first
+build after that session ends, which the next start's update check already is.
+Tag a version to keep it. The last run's output is in
+`~/.cache/claude-box/prune.log`.
+
+`make prune` is the manual version, without the label: every untagged image no
+container is running from, which includes an old Lean image after
+`lean-update`. The tagged image, the home volume and the BuildKit caches all
+stay. A Lean image mounted into a running session counts as unused, so run it
+with no Lean session open.
 
 The build uses BuildKit cache mounts for apt, uv, npm and the cargo registry,
 so a rebuild after editing one package list re-downloads almost nothing. That

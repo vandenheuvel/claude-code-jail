@@ -203,6 +203,29 @@ BUILD = DOCKER_BUILDKIT=1 $(ENGINE) build $(FORMAT) \
           --build-arg USER_UID=$(BUILD_UID) --build-arg USER_GID=$(BUILD_GID) \
           $(BUILDARGS) -t $(REF) $(CTX)
 
+# What every build and pull of $(REF) ends with: the versions of it that were
+# replaced, pruned in the background, so the session an update was checked for
+# starts without waiting on the delete -- a start with a prune running beside
+# it measured no slower than one without. It is `make prune` narrowed to images
+# carrying $(REF)'s title label, read off $(REF) rather than repeated here, so
+# another project's untagged images are left alone. The step images of an old
+# build carry no label, but podman takes them along with it once nothing else
+# is built on them. A version a running session is still using is skipped, and
+# the first build after that session ends collects it -- the next update check
+# is enough, since it runs a build even when there is nothing new. Tag a version
+# to keep it. The last run's output is in $(STAMPDIR)/prune.log.
+#
+# The Lean image is not included: containers mount it rather than run it, and a
+# mount does not count as use, so a prune removes an old Lean image even from
+# under a running session. lean-update leaves its predecessor for `make prune`.
+PRUNEBG = mkdir -p '$(STAMPDIR)'; \
+  ( trap '' HUP INT; \
+    t=$$($(ENGINE) image inspect $(REF) \
+          --format '{{index .Config.Labels "org.opencontainers.image.title"}}') \
+    && [ -n "$$t" ] \
+    && $(ENGINE) image prune -f --filter "label=org.opencontainers.image.title=$$t" \
+  ) </dev/null >'$(STAMPDIR)/prune.log' 2>&1 &
+
 # Attach a terminal only when there is one. `claude-box -p '...'` from a script
 # or a pipe has no tty, and -it there makes the engine warn and Claude Code
 # render escape codes into the captured output.
@@ -336,9 +359,10 @@ ifeq ($(IS_PODMAN),podman)
 	 fi
 endif
 
-## build: (re)build the image, every optional component
+## build: (re)build the image, every optional component, and prune what it replaced
 build:
 	$(BUILD)
+	@$(PRUNEBG)
 
 ## slim: skip the three largest optional layers (LaTeX, Ghidra, browser)
 slim: BUILDARGS += --build-arg WITH_LATEX=0 --build-arg WITH_GHIDRA=0 --build-arg WITH_BROWSERS=0
@@ -405,24 +429,27 @@ push:
 	$(ENGINE) push $(REF)
 pull:
 	$(ENGINE) pull $(REF)
+	@$(PRUNEBG)
 
 ## prune: delete the untagged images earlier builds left behind
 # A rebuild that changes one layer leaves the whole previous image behind,
 # untagged and complete -- twenty-odd gigabytes of it. Under rootless podman
 # there is a second, ID-mapped copy of each image beside it (the chown'd
 # duplicate keep-id needs), so a single stale build can be holding 40 GB.
-# Nothing collects them on its own.
+# Builds of $(REF) now collect those themselves (PRUNEBG); this is for the rest
+# -- an old Lean image after lean-update, and anything else left untagged.
 #
 # The first symptom of that filling a disk is not a message about disk. It is an
 # `npm install` that half-unpacks a package, or a chown that stops mid-layer, in
-# a step with no obvious connection to the real cause. So this is worth running
-# after a few rebuilds, and it is the first thing to try when a build fails
-# somewhere it has never failed before.
+# a step with no obvious connection to the real cause. So this is the first
+# thing to try when a build fails somewhere it has never failed before.
 #
-# Only untagged images go, and only ones no container is using. $(REF), the home
-# volume with its login in it, and the BuildKit cache mounts -- apt, uv, npm and
-# the cargo registry, which are why a rebuild re-downloads almost nothing -- are
-# all left alone. `make clean` is the one that removes the image itself.
+# Only untagged images go, and only ones no container is running from -- a Lean
+# image mounted into a session is not protected, so run this with no Lean session
+# open. $(REF), the home volume with its login in it, and the BuildKit cache
+# mounts -- apt, uv, npm and the cargo registry, which are why a rebuild
+# re-downloads almost nothing -- are all left alone. `make clean` is the one that
+# removes the image itself.
 #
 # Free disk is what gets reported, not `system df`'s reclaimable column: that
 # column counts every image no *running* container is using, so it includes
