@@ -251,7 +251,17 @@ TTYFLAGS := $(shell [ -t 0 ] && echo -it || echo -i)
 # host anyway. Drop it with MASKFLAGS= if that is not your trade:
 #
 #   make MASKFLAGS=        # keep the masks, lose both agents' sandboxes
-RUN = $(ENGINE) run --rm $(TTYFLAGS) \
+#
+# --init: PID 1 inherits every process whose parent exits first, and has to
+# wait() on each one or it stays a zombie. The entrypoint execs the agent, so
+# without it the agent is PID 1, and neither Claude Code nor Codex reaps what it
+# did not start itself. Every `sleep 5 &` a tool call leaves behind becomes a
+# zombie that holds a pid until the container ends, and a long session fills
+# podman's default limit of 2048, after which not even `echo` can fork. The
+# engine's own init -- catatonit for podman, tini as docker-init for docker --
+# runs as PID 1 instead and reaps them. It is a flag here rather than an
+# ENTRYPOINT in the image so that the --entrypoint overrides below get it too.
+RUN = $(ENGINE) run --rm --init $(TTYFLAGS) \
         --shm-size=1g $(USERNS) $(MASKFLAGS) \
         -v "$(WORK)":"$(WDIR)" -w "$(WDIR)" \
         -v $(HOMEVOL):/home/claude \
