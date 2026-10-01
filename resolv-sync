@@ -1,0 +1,82 @@
+#!/bin/sh
+# resolv-sync -- run a container, and keep its DNS following the host's.
+#
+#   resolv-sync podman run ARG...       what the Makefile's RUN is under podman
+#
+# A container's DNS is settled once, as it starts. podman copies the host's
+# nameservers into the container's /etc/resolv.conf, behind pasta's forwarder,
+# and pasta points the forwarder at whichever of them came first; neither is
+# looked at again. So a laptop that moves -- off the dock onto wifi, or from the
+# office home -- leaves every running container with the old network's
+# resolvers, which are often reachable only from inside that network. Routing
+# survives the move, since pasta sends everything out through the host's own
+# sockets, and `curl https://1.1.1.1` still works; but every lookup times out,
+# and to the agent the internet is simply gone.
+#
+# So for as long as the container runs, this watches the host's resolv.conf,
+# and whenever it changes writes it into the container: the host's search
+# domains and options, and its nameservers less the ones only the host can
+# reach -- loopback, and IPv6 link-local, which carries the host's interface
+# name. pasta's forwarder is dropped as well, being pinned to the old network.
+# If that leaves no nameserver at all, the host resolves through a local stub
+# such as systemd-resolved, which the forwarder reaches and which follows the
+# network by itself, and the container's file is left as podman wrote it.
+#
+# It polls every two seconds rather than waiting on inotify, which is not a
+# given on the host: a sleep and a cat each time round. The engine is exec'd,
+# so its exit status, terminal and signals are its own; the watcher notices it
+# is gone and goes too.
+
+set -u
+
+[ $# -ge 2 ] || { echo "usage: $0 ENGINE run [ARG...]" >&2; exit 2; }
+
+engine=$1 sub=$2
+shift 2
+
+src=/etc/resolv.conf
+
+# The engine writes the container's id here once it has created it, and refuses
+# a file that is already there.
+dir=$(mktemp -d "${TMPDIR:-/tmp}/claude-box.XXXXXX") || exit 1
+cid=$dir/cid
+
+# The container's resolv.conf for the host's as it is now, or nothing if the
+# host has no nameserver the container could use.
+derive() {
+	awk '
+		$1 == "nameserver" {
+			a = tolower($2)
+			if (a ~ /^127\./ || a == "::1" || a ~ /^fe[89ab]/ || a ~ /%/) next
+			ns = ns "nameserver " $2 "\n"
+			next
+		}
+		$1 == "search" || $1 == "domain" || $1 == "options" { keep = keep $0 "\n" }
+		END {
+			if (ns != "")
+				printf "# The host'\''s, copied in by claude-box resolv-sync when it changed\n%s%s", keep, ns
+		}' "$src"
+}
+
+# $$ is this shell's pid inside the subshell too, and the engine keeps it once
+# this shell becomes the engine below, so `kill -0 $$` is whether the container
+# is still running. HUP is ignored so that closing the terminal cannot take the
+# watcher down before the engine, leaving the directory behind; INT already is,
+# in the background. All three descriptors go to /dev/null so that a pipe the
+# engine writes into -- `claude-box -p ... | less` -- ends when the engine does.
+(
+	trap '' HUP
+	last=$(cat "$src" 2>/dev/null)
+	while sleep 2 && kill -0 $$ 2>/dev/null; do
+		now=$(cat "$src" 2>/dev/null) || continue
+		[ "$now" != "$last" ] && [ -s "$cid" ] || continue
+		conf=$(derive)
+		if [ -z "$conf" ] || printf '%s\n' "$conf" \
+		     | "$engine" exec -i -u 0 "$(cat "$cid")" sh -c 'cat > /etc/resolv.conf'; then
+			last=$now
+		fi
+	done
+	rm -rf "$dir"
+) </dev/null >/dev/null 2>&1 &
+
+exec "$engine" "$sub" --cidfile "$cid" "$@"

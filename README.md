@@ -572,6 +572,30 @@ else pasta keeps its own defaults. A `--network=...` of your own in `RUNARGS`
 turns the repair off rather than colliding with it, because podman rejects a
 second `--network` instead of taking the later one.
 
+**Changing networks.** A container's DNS servers are the host's at the moment
+it started: podman copies them into its `resolv.conf`, and pasta points its DNS
+forwarder at the first of them, and neither looks again. Unplug a docked laptop
+and carry on over wifi, or take it home from the office, and every running
+container is still asking the old network's resolvers — often reachable only
+from inside it. Routing survives the move, since pasta sends everything out
+through the host's own sockets, so `curl https://1.1.1.1` works while every
+name lookup times out, and to the agent the internet is down.
+
+So under podman, `make` starts the container through `resolv-sync`, which
+watches the host's `/etc/resolv.conf` for as long as the container runs and
+copies it in whenever it changes: the same search domains and options, and the
+nameservers less the ones only the host can reach (loopback, IPv6 link-local).
+A host that resolves through a local stub such as systemd-resolved never needed
+it, since pasta's forwarder reaches the stub and the stub follows the network,
+and there it never changes a thing. It costs a `sleep` and a `cat` every two
+seconds, and like the repair above it stands down for a `--network` in
+`RUNARGS`. A container started before this went in keeps the old behaviour;
+restart it, or fix it by hand from the host:
+
+```sh
+grep -Ev '^#|%' /etc/resolv.conf | podman exec -i -u 0 <container> sh -c 'cat > /etc/resolv.conf'
+```
+
 ---
 
 ## Architecture notes

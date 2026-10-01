@@ -92,12 +92,22 @@ ifeq ($(IS_PODMAN),podman)
     a=$$(ip -4 -o addr show dev "$$1" scope global 2>/dev/null | awk 'NR==1 { print $$4 }'); \
     [ -n "$$a" ] || exit 0; \
     echo "--network=pasta:-a,$$a,-g,$$2")
+
+  # The container's DNS servers are the host's as of the moment it started, in
+  # its resolv.conf and in pasta's forwarder alike, and neither is updated when
+  # the host changes network -- unplugged from the dock onto wifi, say. Every
+  # lookup then goes to the old network's resolvers and times out, while
+  # routing, which pasta takes from the host as it goes, works the whole time.
+  # resolv-sync runs the container and copies the host's resolv.conf into it
+  # whenever that changes; the details are at the top of the script.
+  RESOLVSYNC := $(CTX)/resolv-sync
 else
   BUILD_UID := $(shell id -u)
   BUILD_GID := $(shell id -g)
   USERNS    :=
   FORMAT    :=
   PASTAFIX  :=
+  RESOLVSYNC :=
   MASKFLAGS := --security-opt systempaths=unconfined
   SUBPATH   := image-subpath=
 endif
@@ -133,6 +143,10 @@ RUNARGS ?=
 # a service on the host. Recursive `=`, so RUNARGS is read when the recipe runs
 # and a target that appends to it (bench) is seen too.
 NETFLAGS = $(if $(findstring --network,$(RUNARGS)),,$(PASTAFIX))
+
+# resolv-sync stands down for a network of your own too: it knows what pasta
+# does with DNS, and nothing about what another network does.
+SYNC     = $(if $(findstring --network,$(RUNARGS)),,$(RESOLVSYNC))
 
 # Environment forwarded into the container when set on the host. OPENAI_API_KEY
 # is Codex's API-key path; `codex login` instead writes ~/.codex/auth.json, which
@@ -261,7 +275,7 @@ TTYFLAGS := $(shell [ -t 0 ] && echo -it || echo -i)
 # engine's own init -- catatonit for podman, tini as docker-init for docker --
 # runs as PID 1 instead and reaps them. It is a flag here rather than an
 # ENTRYPOINT in the image so that the --entrypoint overrides below get it too.
-RUN = $(ENGINE) run --rm --init $(TTYFLAGS) \
+RUN = $(SYNC) $(ENGINE) run --rm --init $(TTYFLAGS) \
         --shm-size=1g $(USERNS) $(MASKFLAGS) \
         -v "$(WORK)":"$(WDIR)" -w "$(WDIR)" \
         -v $(HOMEVOL):/home/claude \
