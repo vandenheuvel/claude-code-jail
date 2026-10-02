@@ -210,7 +210,7 @@ make codex ARGS='-s workspace-write -a on-request'   # or keep its sandbox
 | **Browsers** | Chromium on `PATH` plus chromedriver; Playwright for Python *and* for JS/TS, each with its Chromium already in `/opt/playwright`; `shot-scraper` `pytest-playwright` `selenium`; `xvfb` and CJK/emoji fonts |
 | **Lean** | Lean 4 via elan, the newest Mathlib release already built, the Lean REPL, `lean-lsp-mcp`, Loogle with its index of Mathlib, and the lean4-skills workflow; `lean-init` to start a project on it. Mathlib is a companion image that `make lean` builds. See [Lean proofs](#lean-proofs) |
 | **LLM eval** | `anthropic` `openai` `litellm` `tiktoken` `tokenizers` `huggingface-hub` `datasets`; harnesses `inspect-ai` (Python) and `promptfoo` (CLI) |
-| **Documents** | pandoc, Quarto, full TeX Live (`latexmk` `biber` `xetex` `luatex`), graphviz, gnuplot, ghostscript, poppler, qpdf, ImageMagick, ffmpeg, librsvg; `auto-multiple-choice` for multiple-choice exams marked from scans |
+| **Documents** | pandoc, Quarto, full TeX Live (`latexmk` `biber` `xetex` `luatex`), `latexdiff` and `latexdiff-vc` for marked-up revisions, graphviz, gnuplot, ghostscript, poppler, qpdf, ImageMagick, ffmpeg, librsvg; `auto-multiple-choice` for multiple-choice exams marked from scans |
 | **CLI** | `rg` `fd` `bat` `fzf` `delta` `gh` `git-lfs` `just` `direnv` `entr` `tmux` `parallel` `moreutils` `shellcheck` `shfmt` `ctags` `github-latest` `bwrap`, and passwordless `sudo` |
 
 ---
@@ -409,12 +409,13 @@ valgrind --tool=callgrind --callgrind-out-file=a.out ./bench && callgrind_annota
 ## Build options
 
 Everything optional is a build arg, all default to on except `WITH_TORCH`:
-`WITH_LATEX` (TeX Live), `WITH_R` (R and the CRAN set), `WITH_RUST` (rustup and
-cargo tooling), `WITH_BROWSERS` (Chromium and both Playwrights, around 2 GB of
-which 1.7 GB is browser), `WITH_QUARTO`, `WITH_GHIDRA` (Ghidra and its JDK),
-`WITH_AMC` (auto-multiple-choice, which depends on TeX Live and so also goes
-with `WITH_LATEX=0`), `WITH_LEAN` (elan, `lean-lsp-mcp`, `loogle` and the `lean`
-skill; Mathlib itself is the [Lean image](#lean-proofs)).
+`WITH_LATEX` (TeX Live and `latexdiff`), `WITH_R` (R and the CRAN set),
+`WITH_RUST` (rustup and cargo tooling), `WITH_BROWSERS` (Chromium and both
+Playwrights, around 2 GB of which 1.7 GB is browser), `WITH_QUARTO`,
+`WITH_GHIDRA` (Ghidra and its JDK), `WITH_AMC` (auto-multiple-choice, which
+depends on TeX Live and so also goes with `WITH_LATEX=0`), `WITH_LEAN` (elan,
+`lean-lsp-mcp`, `loogle` and the `lean` skill; Mathlib itself is the
+[Lean image](#lean-proofs)).
 `WITH_TORCH=1` adds CPU PyTorch, `transformers`, `accelerate` and
 `sentence-transformers` — left out by default because most evaluation here is
 API-side and it costs about a gigabyte. Also `RUST_VERSION=` (default `stable`)

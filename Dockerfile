@@ -666,6 +666,24 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache-${TARGE
     apt-get update && $APT bubblewrap \
  && bwrap --version
 
+# ---- latexdiff --------------------------------------------------------------
+# latexdiff marks up the changes between two versions of a .tex file as a third
+# one that compiles; latexdiff-vc does the same against a git revision
+# (`latexdiff-vc --git -r HEAD~1 --pdf paper.tex`), and latexrevise accepts or
+# drops the markup again. It is a single Perl script with Algorithm::Diff
+# bundled, so the package adds nothing else. Its default markup is ulem, which
+# the LaTeX layer installs through texlive-plain-generic.
+#
+# Debian packages it on its own rather than in texlive-extra-utils, and it is a
+# layer down here rather than a word in the LaTeX layer for the reason
+# bubblewrap is: up there it would rebuild R, Rust, Python and the browsers.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache-${TARGETARCH} \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked,id=apt-lists-${TARGETARCH} \
+    if [ "$WITH_LATEX" = "1" ]; then \
+      apt-get update && $APT latexdiff \
+   && latexdiff --version; \
+    fi
+
 # ---- coding agents ----------------------------------------------------------
 # Claude Code and Codex, last and a layer each, because these are the layers
 # that change daily. ADD of the registry's `latest` metadata makes the published
