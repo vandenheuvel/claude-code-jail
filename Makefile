@@ -281,6 +281,19 @@ RUN = $(SYNC) $(ENGINE) run --rm --init $(TTYFLAGS) \
         -v $(HOMEVOL):/home/claude \
         $(GITFLAGS) $(ENVFLAGS) $(RCFLAGS) $(NETFLAGS) $(LEANFLAGS) $(RUNARGS)
 
+# Run after each $(RUN): a full-screen agent switches the terminal into modes
+# that it switches off again as it exits -- mouse reporting, bracketed paste,
+# focus events, the kitty and xterm keyboard extensions, a hidden cursor. One
+# that dies instead, as an abort does (make's `Error 134` is SIGABRT), leaves
+# them all on, and the shell it drops back to gets every mouse movement typed
+# into it as `35;93;38M`. So they are switched off here once the container is
+# gone, however it ended; screen and tmux pass each one on to the terminal
+# outside, and one that is already off stays off. The alternate screen is left
+# alone, since switching out of it would hide whatever the crash printed. With
+# no terminal, as under `claude-box -p ... | less`, nothing is written, and the
+# exit status is the engine's either way.
+TTYRESET = s=$$?; [ ! -t 1 ] || printf '\033[?1000l\033[?1002l\033[?1003l\033[?1005l\033[?1006l\033[?1015l\033[?1004l\033[?2004l\033[<u\033[>4m\033[?25h'; exit $$s
+
 .DEFAULT_GOAL := run
 .PHONY: run image home update check-update build slim minimal rebuild shell \
         codex lean lean-image lean-update bench versions size install push pull \
@@ -288,7 +301,7 @@ RUN = $(SYNC) $(ENGINE) run --rm --init $(TTYFLAGS) \
 
 ## run: Claude Code on $(WORK) -- the default target
 run: check-update home
-	$(RUN) $(REF) $(ARGS)
+	$(RUN) $(REF) $(ARGS); $(TTYRESET)
 
 ## codex: Codex on $(WORK), in the same image and the same home volume
 # The image's ENTRYPOINT is Claude Code, so the second agent is an override of it
@@ -298,7 +311,7 @@ run: check-update home
 # beyond the MASKFLAGS every target already gets: unlike `bench` this adds no
 # capability and relaxes no seccomp profile.
 codex: check-update home
-	$(RUN) --entrypoint codex $(REF) $(ARGS)
+	$(RUN) --entrypoint codex $(REF) $(ARGS); $(TTYRESET)
 
 ## lean: Claude Code on $(WORK) with the Lean tools on, after lean-init there
 # lean-init makes the directory a Lean project on the Lean image's prebuilt
@@ -307,7 +320,7 @@ codex: check-update home
 # them from then on, and every other directory never loads them. The first one
 # anywhere builds the Lean image.
 lean: lean-image check-update home
-	$(RUN) --entrypoint bash $(REF) -c 'lean-init && exec claude-start "$$@"' claude $(ARGS)
+	$(RUN) --entrypoint bash $(REF) -c 'lean-init && exec claude-start "$$@"' claude $(ARGS); $(TTYRESET)
 
 # The Lean image, built only when it is absent, as `image` is.
 lean-image:
@@ -404,7 +417,7 @@ rebuild: build
 
 ## shell: bash in the image instead of either agent
 shell: check-update home
-	$(RUN) --entrypoint bash $(REF) $(ARGS)
+	$(RUN) --entrypoint bash $(REF) $(ARGS); $(TTYRESET)
 
 ## bench: shell with the capabilities perf, bpftrace and heaptrack need
 # perf_event_paranoid is a host sysctl and cannot be set per container. If perf
