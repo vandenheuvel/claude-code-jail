@@ -270,12 +270,24 @@ TTYFLAGS := $(shell [ -t 0 ] && echo -it || echo -i)
 # wait() on each one or it stays a zombie. The entrypoint execs the agent, so
 # without it the agent is PID 1, and neither Claude Code nor Codex reaps what it
 # did not start itself. Every `sleep 5 &` a tool call leaves behind becomes a
-# zombie that holds a pid until the container ends, and a long session fills
-# podman's default limit of 2048, after which not even `echo` can fork. The
-# engine's own init -- catatonit for podman, tini as docker-init for docker --
-# runs as PID 1 instead and reaps them. It is a flag here rather than an
-# ENTRYPOINT in the image so that the --entrypoint overrides below get it too.
-RUN = $(SYNC) $(ENGINE) run --rm --init $(TTYFLAGS) \
+# zombie that holds a pid until the container ends, and a long session runs the
+# container out of them, after which not even `echo` can fork. The engine's own
+# init -- catatonit for podman, tini as docker-init for docker -- runs as PID 1
+# instead and reaps them. It is a flag here rather than an ENTRYPOINT in the
+# image so that the --entrypoint overrides below get it too.
+#
+# --pids-limit=-1: podman caps a container at 2048 tasks by default, and the
+# cap counts threads, not processes. Live ones fill it too, then: a session
+# fanning out to a few dozen subagents, each running Python or Lean, is past
+# 2048 on a large host, where every numpy import starts an OpenBLAS thread per
+# core (up to 64) and Lean sizes its pool to the core count. Past the cap every
+# fork and pthread_create fails with EAGAIN, the agent's own included, and it
+# aborts -- make's `Error 134` below -- taking every subagent with it. Without
+# the cap, a rootless container is still bounded by its user's systemd slice
+# (TasksMax), and a rootful one by the kernel's pid_max. To put a cap back:
+#
+#   make RUNARGS=--pids-limit=32768
+RUN = $(SYNC) $(ENGINE) run --rm --init --pids-limit=-1 $(TTYFLAGS) \
         --shm-size=1g $(USERNS) $(MASKFLAGS) \
         -v "$(WORK)":"$(WDIR)" -w "$(WDIR)" \
         -v $(HOMEVOL):/home/claude \
