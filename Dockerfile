@@ -752,6 +752,31 @@ RUN --mount=type=cache,target=/opt/npm-cache,sharing=locked,id=npm-${TARGETARCH}
  && rm /tmp/codex-latest.json \
  && chown -R "$USER_UID:$USER_GID" "/home/$USERNAME"
 
+# ---- no self-updates --------------------------------------------------------
+# Both agents update themselves, and in here the update has nowhere to go.
+# Claude Code's background updater runs `npm install -g` over the copy above,
+# which the writable /opt/npm-global lets it do, and Codex checks the registry
+# at start-up and offers to run the same install. Either way the new version
+# lands in the container's own layer, which --rm throws away when the session
+# ends, and until then the session that downloaded it is still running the old
+# binary. What moves the agents is the Makefile's start-up check, which
+# rebuilds the two layers above.
+#
+# DISABLE_AUTOUPDATER stops Claude Code's updater and leaves `claude update`
+# working by hand; DISABLE_UPDATES would refuse that too, telling you to ask
+# your administrator. It also stops plugin auto-updates, unless
+# FORCE_AUTOUPDATE_PLUGINS says otherwise -- and plugins live in ~/.claude in
+# the home volume, where an update does persist and nothing else refreshes
+# them, so those stay on. Codex's switch is a config key, set in the system
+# layer of its config, so a value in ~/.codex/config.toml still wins.
+#
+# A layer of its own after the agents, so that editing it rebuilds this and the
+# entrypoint and nothing else.
+ENV DISABLE_AUTOUPDATER=1 \
+    FORCE_AUTOUPDATE_PLUGINS=1
+RUN install -d /etc/codex \
+ && echo 'check_for_update_on_startup = false' > /etc/codex/config.toml
+
 # ---- entrypoint -------------------------------------------------------------
 # claude-start writes the image's defaults for Claude Code into the user
 # settings in the home volume, each only while it is unset there, and then

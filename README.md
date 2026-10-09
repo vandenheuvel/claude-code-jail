@@ -124,6 +124,15 @@ Newer apt packages and a newer base image are a different question: those live
 in cached layers the check deliberately keeps, and `make rebuild` is what
 refreshes them.
 
+That check is the only thing that updates the agents: neither updates itself
+inside the container. An update either of them installed there would land in
+the container's own layer, which `--rm` discards when the session ends. The
+image sets `DISABLE_AUTOUPDATER=1` for Claude Code, so `claude update` still
+works if you run it yourself, and `check_for_update_on_startup = false` in
+`/etc/codex/config.toml` for Codex, which `~/.codex/config.toml` can override.
+Claude Code's plugins do keep updating themselves (`FORCE_AUTOUPDATE_PLUGINS=1`),
+because they live in the home volume and the image never refreshes them.
+
 Base is `node:26-trixie-slim` (Debian 13), building for `linux/amd64` and
 `linux/arm64`; see [Architecture notes](#architecture-notes) for the two things
 that differ.
