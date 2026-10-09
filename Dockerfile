@@ -777,6 +777,29 @@ ENV DISABLE_AUTOUPDATER=1 \
 RUN install -d /etc/codex \
  && echo 'check_for_update_on_startup = false' > /etc/codex/config.toml
 
+# ---- thread pools -----------------------------------------------------------
+# OpenBLAS starts a thread per core, up to 64, the moment it is loaded, whether
+# or not anything multiplies a matrix: numpy's wheel and scipy's each bundle
+# their own copy, so `import scipy` on an 88-core host is some 128 threads, and
+# R gets the same from Debian's. OpenMP pools -- xgboost, lightgbm,
+# scikit-learn, torch, R packages -- are sized to the cores as well. One
+# process on its own is fine. A session running a few dozen subagents in
+# parallel is thousands of threads oversubscribing the host -- and, under
+# podman's default cap of 2048 tasks, what aborted it (see --pids-limit in the
+# Makefile).
+#
+# Four still parallelises a large matrix product or a boosting round. For a job
+# that wants the whole machine, override one command or one session:
+#
+#   OPENBLAS_NUM_THREADS=32 OMP_NUM_THREADS=32 python train.py
+#   make RUNARGS='-e OPENBLAS_NUM_THREADS=32 -e OMP_NUM_THREADS=32'
+#
+# After the agents, like the switches above, so that changing a number rebuilds
+# nothing but the entrypoint.
+ENV OPENBLAS_NUM_THREADS=4 \
+    OMP_NUM_THREADS=4 \
+    MKL_NUM_THREADS=4
+
 # ---- entrypoint -------------------------------------------------------------
 # claude-start writes the image's defaults for Claude Code into the user
 # settings in the home volume, each only while it is unset there, and then

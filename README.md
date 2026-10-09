@@ -474,6 +474,17 @@ anyway.
 are the venv's and `pip install X` lands there — it is world-writable on
 purpose. For project-scoped work prefer `uv venv` and `uv run`.
 
+**Threads.** `OPENBLAS_NUM_THREADS`, `OMP_NUM_THREADS` and `MKL_NUM_THREADS`
+are 4. So numpy, scipy and R's BLAS, and the OpenMP pools of xgboost, lightgbm,
+scikit-learn and torch, start four threads each instead of one per core. On a
+large host, a session running a few dozen subagents otherwise starts thousands.
+A job that wants the whole machine can set them on its own command line
+(`OPENBLAS_NUM_THREADS=32 OMP_NUM_THREADS=32 python train.py`), or for a whole
+session with `make RUNARGS='-e OPENBLAS_NUM_THREADS=32 -e OMP_NUM_THREADS=32'`.
+The container also has no task limit (`--pids-limit=-1`). podman's default,
+2048, counts threads, and a session that hit it aborted along with every
+subagent it was running.
+
 **R.** `install.packages()` points at Posit Package Manager's Debian binary
 repo, so installs are downloads rather than compiles, and
 `/usr/local/lib/R/site-library` is writable without sudo. `R_LIBS_SITE` is
