@@ -53,6 +53,10 @@ ifeq ($(IS_PODMAN),podman)
   # See MASKFLAGS below. podman spells it per-path and leaves /sys/firmware
   # and the read-only paths alone; docker's switch is all-or-nothing.
   MASKFLAGS := --security-opt 'unmask=/proc/*'
+  # The seccomp profile podman confines every container with, and the base of
+  # the one SECCOMPFLAGS gives it instead. A copy in /etc overrides the packaged
+  # one, here as for podman itself.
+  SECCOMPBASE := $(firstword $(wildcard /etc/containers/seccomp.json /usr/share/containers/seccomp.json))
   # podman builds OCI format by default, and there the Dockerfile's SHELL
   # directive is ignored with only a warning -- silently dropping `set -e` and
   # `pipefail` from every RUN in the build, which is exactly the masking that
@@ -109,6 +113,9 @@ else
   PASTAFIX  :=
   RESOLVSYNC :=
   MASKFLAGS := --security-opt systempaths=unconfined
+  # docker compiles its default seccomp profile into the engine, so there is no
+  # file to derive SECCOMPFLAGS' profile from.
+  SECCOMPBASE :=
   SUBPATH   := image-subpath=
 endif
 
@@ -287,8 +294,47 @@ TTYFLAGS := $(shell [ -t 0 ] && echo -it || echo -i)
 # (TasksMax), and a rootful one by the kernel's pid_max. To put a cap back:
 #
 #   make RUNARGS=--pids-limit=32768
+#
+# SECCOMPFLAGS: the engines' default seccomp profiles refuse syscalls that
+# measuring code needs and that an unprivileged host account has, and each
+# refusal reads like something else:
+#
+#   perf_event_open   perf, samply, cargo flamegraph and PAPI: EPERM for every
+#                     event, the software clock included, which looks like the
+#                     host's perf_event_paranoid and is not
+#   personality       `setarch -R`, the usual way to switch ASLR off for a run
+#   move_pages,       which NUMA node a page is on, and moving it there
+#   migrate_pages
+#   io_uring_*        ENOSYS, so io_uring code falls back to its slower path
+#                     and that is what gets measured
+#
+# The profile does allow perf_event_open to a container holding CAP_PERFMON,
+# but adding the capability is no way back to it: podman hands an added
+# capability to the container's non-root user as an ambient one, and bubblewrap
+# refuses to start under any capability it did not set up itself (`bwrap:
+# Unexpected capabilities but not setuid`), which takes both agents' sandboxes
+# down with it.
+#
+# So under podman the container gets podman's own profile, read off the host,
+# with those syscalls allowed outright and nothing else changed, and no
+# capability. The kernel then decides as it does for the host account: at
+# perf_event_paranoid 2, user-space counters and sampling of whatever the
+# session starts, but no kernel or system-wide (-a) profiling. docker leaves no
+# file to start from, so under docker the container runs with seccomp
+# unconfined. What either trades is kernel attack surface -- perf and io_uring
+# have had their share of privilege-escalation bugs, which is why container
+# profiles fence them off -- not what the container can see of the host's
+# files, which is the mount namespace's job rather than seccomp's. To put the
+# engine's default back:
+#
+#   make SECCOMPFLAGS=
+SECCOMPALLOW := perf_event_open personality move_pages migrate_pages \
+                io_uring_setup io_uring_enter io_uring_register
+SECCOMPFILE  := $(if $(SECCOMPBASE),$(STAMPDIR)/seccomp.json)
+SECCOMPFLAGS ?= --security-opt seccomp='$(or $(SECCOMPFILE),unconfined)'
+
 RUN = $(SYNC) $(ENGINE) run --rm --init --pids-limit=-1 $(TTYFLAGS) \
-        --shm-size=1g $(USERNS) $(MASKFLAGS) \
+        --shm-size=1g $(USERNS) $(MASKFLAGS) $(SECCOMPFLAGS) \
         -v "$(WORK)":"$(WDIR)" -w "$(WDIR)" \
         -v $(HOMEVOL):/home/claude \
         $(GITFLAGS) $(ENVFLAGS) $(RCFLAGS) $(NETFLAGS) $(LEANFLAGS) $(RUNARGS)
@@ -312,7 +358,7 @@ TTYRESET = s=$$?; [ ! -t 1 ] || printf '\033[?1000l\033[?1002l\033[?1003l\033[?1
         prune clean help
 
 ## run: Claude Code on $(WORK) -- the default target
-run: check-update home
+run: check-update home $(SECCOMPFILE)
 	$(RUN) $(REF) $(ARGS); $(TTYRESET)
 
 ## codex: Codex on $(WORK), in the same image and the same home volume
@@ -321,8 +367,8 @@ run: check-update home
 # /home/claude, so both agents' logins and history sit in the one volume.
 # Codex sandboxes its own command execution and needs nothing here to do it
 # beyond the MASKFLAGS every target already gets: unlike `bench` this adds no
-# capability and relaxes no seccomp profile.
-codex: check-update home
+# capability and relaxes the seccomp profile no further than every target does.
+codex: check-update home $(SECCOMPFILE)
 	$(RUN) --entrypoint codex $(REF) $(ARGS); $(TTYRESET)
 
 ## lean: Claude Code on $(WORK) with the Lean tools on, after lean-init there
@@ -331,7 +377,7 @@ codex: check-update home
 # So this target is only needed once per directory: plain `make` there keeps
 # them from then on, and every other directory never loads them. The first one
 # anywhere builds the Lean image.
-lean: lean-image check-update home
+lean: lean-image check-update home $(SECCOMPFILE)
 	$(RUN) --entrypoint bash $(REF) -c 'lean-init && exec claude-start "$$@"' claude $(ARGS); $(TTYRESET)
 
 # The Lean image, built only when it is absent, as `image` is.
@@ -408,6 +454,19 @@ ifeq ($(IS_PODMAN),podman)
 	 fi
 endif
 
+# The seccomp profile SECCOMPFLAGS hands podman: the host's, with each of
+# SECCOMPALLOW taken out of whatever rule named it and allowed by one rule of
+# its own. jq comes from the image, so the host needs nothing. Derived again
+# when the host's profile changes -- a containers-common upgrade -- or this
+# file does, which is where SECCOMPALLOW lives.
+ifneq ($(SECCOMPFILE),)
+$(SECCOMPFILE): $(SECCOMPBASE) $(THIS) | image
+	@mkdir -p '$(@D)'
+	@$(ENGINE) run --rm -i --network=none --entrypoint jq $(REF) \
+	   '.syscalls |= map(.names -= $$ARGS.positional | select(.names != [])) | .syscalls += [{names: $$ARGS.positional, action: "SCMP_ACT_ALLOW"}]' \
+	   --args $(SECCOMPALLOW) <'$<' >'$@.tmp' && mv '$@.tmp' '$@'
+endif
+
 ## build: (re)build the image, every optional component, and prune what it replaced
 build:
 	$(BUILD)
@@ -428,12 +487,18 @@ rebuild: BUILDARGS += --no-cache --pull
 rebuild: build
 
 ## shell: bash in the image instead of either agent
-shell: check-update home
+shell: check-update home $(SECCOMPFILE)
 	$(RUN) --entrypoint bash $(REF) $(ARGS); $(TTYRESET)
 
-## bench: shell with the capabilities perf, bpftrace and heaptrack need
-# perf_event_paranoid is a host sysctl and cannot be set per container. If perf
-# still reports "Access to performance monitoring is limited", the host needs:
+## bench: shell that can also attach to running processes (py-spy dump, gdb -p)
+# Every target can already count and sample what it starts (see SECCOMPFLAGS).
+# This adds CAP_SYS_PTRACE, which gets past the host's Yama ptrace_scope to a
+# process the profiler did not start, and the rest of what bpftrace and
+# heaptrack can use. Not for running an agent in: under podman the added
+# capabilities are ambient ones, and bubblewrap will not start under them.
+# Kernel and system-wide profiling are decided by perf_event_paranoid, a host
+# sysctl no container can set: kernel samples of your own processes (:k) need
+# it at 1, system-wide (-a) at 0:
 #   sudo sysctl kernel.perf_event_paranoid=1
 # Pinning to a fixed core and disabling ASLR makes measurements repeatable:
 #   taskset -c 2 setarch -R hyperfine ./target/release/bench

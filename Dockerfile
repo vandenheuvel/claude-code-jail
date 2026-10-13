@@ -125,7 +125,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache-${TARGE
 #                      deterministic instruction and cache-miss counts, which is
 #                      the only way to measure a 2% change on a noisy machine
 #   linux-perf         sampling profiles and hardware counters (see README: the
-#                      container needs --cap-add PERFMON to read them)
+#                      Makefile's seccomp profile is what lets perf run here)
 #   heaptrack          allocation profiles when the cost turns out to be malloc
 #   google-perftools   pprof + tcmalloc, for the same question from the other end
 #   bpftrace           ad-hoc kernel/user tracing when the cost is off-CPU

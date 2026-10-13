@@ -58,7 +58,7 @@ make            # Claude Code on the current directory
 make codex      # Codex instead, same image and same directory
 make lean       # Claude Code with the Lean tools on for this directory
 make shell      # bash instead
-make bench      # shell with the capabilities perf needs
+make bench      # shell that can also attach profilers to running processes
 make prune      # reclaim the disk earlier builds are still holding
 make help       # everything else
 ```
@@ -399,14 +399,27 @@ against the crate's own artifacts.
 
 ### Getting trustworthy numbers
 
-`perf` needs capabilities a default container doesn't have, so `make bench`
-adds `PERFMON`, `SYS_PTRACE`, `SYS_ADMIN` and `seccomp=unconfined`. Two things
-it cannot do for you: `perf_event_paranoid` is a **host** sysctl, so if `perf
-stat` still reports limited access run `sudo sysctl kernel.perf_event_paranoid=1`
-on the host; and `bpftrace` needs `--privileged` on top.
+Every session can count and sample what it runs: `perf stat` (cycles, IPC,
+cache and branch misses, `-M TopdownL1`), `perf record` with call graphs,
+`samply`, `cargo flamegraph`, PAPI. A container's default seccomp profile
+refuses `perf_event_open` outright, along with `setarch -R`, NUMA page
+placement and io_uring, so `make` starts every container under podman's own
+profile with those allowed and nothing else changed (under docker, which keeps
+its profile inside the engine, seccomp is off instead; `make SECCOMPFLAGS=` puts
+the engine's default back). No capability is added — under podman that would
+stop bubblewrap, and with it both agents' sandboxes — so what perf may do is
+what the host's `perf_event_paranoid` allows your own account. At the usual 2,
+that is user space only; kernel samples (`:k`) need
+`sudo sysctl kernel.perf_event_paranoid=1` on the host, and system-wide `-a`
+needs 0.
 
-Once inside, pin the work and disable ASLR so runs are comparable — and for
-changes too small to see through timing noise, skip the clock entirely:
+Two things still need `make bench`, a shell rather than an agent session:
+attaching to a process the profiler did not start (`py-spy dump --pid`,
+`gdb -p`, which the host's Yama `ptrace_scope` otherwise stops), and
+`bpftrace`, which needs `--privileged` on top.
+
+Pin the work and disable ASLR so runs are comparable — and for changes too
+small to see through timing noise, skip the clock entirely:
 
 ```sh
 taskset -c 2 setarch -R hyperfine -w 3 './target/release/bench'
