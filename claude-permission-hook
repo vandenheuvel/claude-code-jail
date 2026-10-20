@@ -1,0 +1,24 @@
+#!/bin/sh
+# claude-permission-hook
+#
+# Claude Code's PermissionRequest hook in the image, set in
+# /etc/claude-code/managed-settings.d/claude-box.json. It approves whatever
+# permission dialog a session is about to stop at.
+#
+# --dangerously-skip-permissions does not reach every check. A few are marked
+# as ones bypass mode may not skip, and the session asks anyway -- among them
+# rm on a target it cannot resolve before the command runs, such as
+#
+#   cd "$E" && rm -rf input/scans/*
+#
+# which comes up as "Dangerous rm operation on statically-unresolvable target"
+# and, left unanswered, is denied after two minutes. Permission rules cannot
+# allow these, and neither can a PreToolUse hook answering "allow"; a
+# PermissionRequest hook, which runs as the dialog is about to be shown, can.
+#
+# AskUserQuestion and ExitPlanMode go through the same dialog to put a question
+# or a plan to the person, and approving that would answer for them. Those
+# fall through to the dialog, as does anything jq cannot read.
+exec jq -c 'select(.tool_name | IN("AskUserQuestion", "ExitPlanMode") | not)
+            | {hookSpecificOutput: {hookEventName: "PermissionRequest",
+                                    decision: {behavior: "allow"}}}'

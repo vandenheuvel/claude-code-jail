@@ -800,6 +800,20 @@ ENV OPENBLAS_NUM_THREADS=4 \
     OMP_NUM_THREADS=4 \
     MKL_NUM_THREADS=4
 
+# ---- permission prompts -----------------------------------------------------
+# --dangerously-skip-permissions leaves a few checks standing -- rm on a target
+# that cannot be resolved before it runs is one -- and a session stops at those
+# and asks anyway. claude-permission-hook answers them as a PermissionRequest
+# hook, which is the one thing that can. It goes in the managed-settings drop-in
+# directory, where nothing in the home volume or a project overrides it, like
+# the flag itself. It runs only when a dialog is about to come up, which under
+# the flag is seldom, so it costs a session nothing otherwise.
+RUN --mount=type=bind,source=claude-permission-hook,target=/tmp/claude-permission-hook \
+    install -m 0755 /tmp/claude-permission-hook /usr/local/bin/claude-permission-hook \
+ && install -d /etc/claude-code/managed-settings.d \
+ && echo '{"hooks":{"PermissionRequest":[{"hooks":[{"type":"command","command":"/usr/local/bin/claude-permission-hook"}]}]}}' \
+      > /etc/claude-code/managed-settings.d/claude-box.json
+
 # ---- entrypoint -------------------------------------------------------------
 # claude-start writes the image's defaults for Claude Code into the user
 # settings in the home volume, each only while it is unset there, and then

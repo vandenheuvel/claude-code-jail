@@ -80,7 +80,15 @@ it never stops to ask before running a command or editing a file, since the
 container is the sandbox. The entrypoint, `claude-start`, always passes the
 flag, and writes `"skipDangerousModePermissionPrompt": true` into
 `~/.claude/settings.json` so the one-time warning about it doesn't come up —
-declining that warning would only exit. What a session can reach is what the
+declining that warning would only exit. The flag leaves a few checks standing
+that a session would still stop at — `rm` on a target it cannot resolve before
+the command runs, such as `cd "$d" && rm -rf build/*`, is one — so the image
+also answers every permission dialog through a `PermissionRequest` hook,
+`claude-permission-hook`, set in managed settings. Questions and plans a
+session puts to you (AskUserQuestion, ExitPlanMode) still come through. Those
+checks are there because the target cannot be known in advance: with them
+answered, an `rm` after a wrong `cd` runs, and in the mounted directory that is
+host data. What a session can reach is what the
 container can: the mounted directory, the home volume, the network, the tokens
 forwarded from the host (`GH_TOKEN` included), and passwordless `sudo`.
 
