@@ -141,6 +141,12 @@ works if you run it yourself, and `check_for_update_on_startup = false` in
 Claude Code's plugins do keep updating themselves (`FORCE_AUTOUPDATE_PLUGINS=1`),
 because they live in the home volume and the image never refreshes them.
 
+Claude Code's telemetry is off as well: the image sets `DISABLE_TELEMETRY`,
+`DISABLE_ERROR_REPORTING`, `CLAUDE_CODE_DISABLE_FEATURE_FLAGS` and
+`CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY`, so it sends no usage analytics or error
+reports, runs no A/B experiments, and never asks how a session went. Features
+Anthropic rolls out by flag stay at the release's defaults.
+
 Base is `node:26-trixie-slim` (Debian 13), building for `linux/amd64` and
 `linux/arm64`; see [Architecture notes](#architecture-notes) for the two things
 that differ.

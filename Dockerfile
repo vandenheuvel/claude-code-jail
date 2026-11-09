@@ -777,6 +777,23 @@ ENV DISABLE_AUTOUPDATER=1 \
 RUN install -d /etc/codex \
  && echo 'check_for_update_on_startup = false' > /etc/codex/config.toml
 
+# ---- no telemetry -----------------------------------------------------------
+# Claude Code sends usage analytics and error reports to Anthropic, asks now
+# and then how a session went, and fetches feature flags, which are what its
+# A/B experiments run on. These turn all four off. DISABLE_TELEMETRY alone
+# already stops the flags being evaluated; the flag switch is set as well so
+# the experiments stay off should that ever change. With flags off, a feature
+# Anthropic rolls out by flag stays at the default built into the release, and
+# a session here cannot take over one started remotely.
+#
+# CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC would cover all of this in one
+# switch, but it also refuses to publish Artifacts, use Projects, upload files,
+# download plugin archives or run the built-in gh api, so it stays unset.
+ENV DISABLE_TELEMETRY=1 \
+    DISABLE_ERROR_REPORTING=1 \
+    CLAUDE_CODE_DISABLE_FEATURE_FLAGS=1 \
+    CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1
+
 # ---- thread pools -----------------------------------------------------------
 # OpenBLAS starts a thread per core, up to 64, the moment it is loaded, whether
 # or not anything multiplies a matrix: numpy's wheel and scipy's each bundle
