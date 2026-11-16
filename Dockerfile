@@ -22,7 +22,8 @@
 #   WITH_LEAN=0      drop elan, lean-lsp-mcp, loogle and the lean skill (Mathlib
 #                    itself is a separate image, lean/Dockerfile, built by
 #                    `make lean`)
-#   WITH_WEBDEV=0    drop docker (rootless podman) and compose
+#   WITH_WEBDEV=0    drop docker (rootless podman) and compose, and the
+#                    PostgreSQL server and pg-dev
 #   USER_UID/USER_GID  match your host account so bind mounts stay writable
 #
 # `node:26-slim` resolves to Debian 13 "trixie". Pinned explicitly: every apt
@@ -699,7 +700,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache-${TARGE
     apt-get update && $APT iproute2 lsof xxd postgresql-client \
  && command -v ip ss lsof xxd psql pg_dump >/dev/null
 
-# ---- webdev: containers -----------------------------------------------------
+# ---- webdev: containers and PostgreSQL --------------------------------------
 # `docker` here is podman, rootless, running inside this container's own user
 # namespace: docker run / build / compose work, and so does anything speaking
 # the Docker API (testcontainers, the Docker SDKs), through the socket at
@@ -737,6 +738,16 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache-${TARGE
 # registries are defined". Docker Hub as the one search registry makes every
 # short name docker.io's, as in every compose file and README.
 #
+# PostgreSQL is the server for pg-dev (installed further down), which gives each
+# project a cluster in the home volume. Debian's packaging would otherwise make
+# and start a system cluster as `postgres` during the build, so that is switched
+# off before the server goes in. pgvector rides along, being what most current
+# web apps that want an extension want. initdb, pg_ctl and postgres itself live
+# in a versioned directory off PATH; they are linked into /usr/local/bin so the
+# test harnesses that start throwaway servers find them, and /run/postgresql,
+# where psql looks by default, is made writable so a server run as the user can
+# put its socket there.
+#
 # And /var/run/docker.sock points at podman's socket in XDG_RUNTIME_DIR (set
 # further down), for the tools that never read DOCKER_HOST.
 ARG WITH_WEBDEV=1
@@ -746,6 +757,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache-${TARGE
       apt-get update && $APT \
         podman podman-docker docker-compose crun conmon catatonit \
         uidmap passt netavark aardvark-dns libcap2-bin \
+        postgresql-common \
+      && sed -ri 's/^#?\s*(create_main_cluster)\s*=.*/\1 = false/' /etc/postgresql-common/createcluster.conf \
+      && grep -qx 'create_main_cluster = false' /etc/postgresql-common/createcluster.conf \
+      && $APT postgresql postgresql-17-pgvector \
+      && [ -z "$(ls -A /etc/postgresql)" ] \
       && { if [ "$USER_UID" -lt 65536 ]; then \
              printf '%s:1:%s\n%s:%s:%s\n' "$USERNAME" "$((USER_UID - 1))" \
                "$USERNAME" "$((USER_UID + 1))" "$((65535 - USER_UID))"; \
@@ -760,11 +776,15 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache-${TARGE
            > /etc/containers/registries.conf.d/50-docker-hub.conf \
       && { [ -e /usr/bin/docker-compose ] \
            || ln -s /usr/libexec/docker/cli-plugins/docker-compose /usr/bin/docker-compose; } \
+      && for f in /usr/lib/postgresql/*/bin/*; do \
+           [ -e "/usr/bin/${f##*/}" ] || ln -sf "$f" /usr/local/bin/; \
+         done \
+      && install -d -m 1777 /run/postgresql \
       && ln -sf "/run/user/$USER_UID/podman/podman.sock" /run/docker.sock \
       && install -d -o "$USER_UID" -g "$USER_GID" \
            "/home/$USERNAME/.local" "/home/$USERNAME/.local/share" \
            "/home/$USERNAME/.local/share/containers" \
-      && podman --version && docker-compose version; \
+      && podman --version && docker-compose version && initdb --version; \
     fi
 
 # ---- coding agents ----------------------------------------------------------
@@ -938,21 +958,26 @@ RUN if [ "$WITH_RUST" = "1" ]; then \
       && chmod 0666 /opt/rust/cargo/config.toml; \
     fi
 
-# ---- the webdev skill -------------------------------------------------------
-# The webdev skill is how a session learns that docker and compose are already
-# here, rather than installing them. Like the lean skill it is on in every
-# session -- 136 characters of description, no process, no hook -- and it lives
-# in the managed-settings directory for the same reason.
+# ---- pg-dev and the webdev skill --------------------------------------------
+# pg-dev starts a PostgreSQL server for the project the container was started
+# on, with its data in the home volume, so the database is where the last
+# session left it; the script has the details. The webdev skill is how a
+# session learns that containers and pg-dev are already here, rather than
+# installing its own. Like the lean skill it is on in every session -- 158
+# characters of description, no process, no hook -- and it lives in the
+# managed-settings directory for the same reason.
 #
 # XDG_RUNTIME_DIR is set for every build, webdev or not, because podman is not
 # the only program that looks for it; DOCKER_HOST names podman's socket in it,
 # which box-init starts.
 ENV XDG_RUNTIME_DIR=/run/user/${USER_UID} \
     DOCKER_HOST=unix:///run/user/${USER_UID}/podman/podman.sock
-RUN --mount=type=bind,source=webdev/SKILL.md,target=/tmp/webdev-SKILL.md \
+RUN --mount=type=bind,source=webdev/pg-dev,target=/tmp/pg-dev \
+    --mount=type=bind,source=webdev/SKILL.md,target=/tmp/webdev-SKILL.md \
     install -d -m 0700 -o "$USER_UID" -g "$USER_GID" "$XDG_RUNTIME_DIR" \
  && if [ "$WITH_WEBDEV" = "1" ]; then \
-      install -D -m 0644 /tmp/webdev-SKILL.md /etc/claude-code/.claude/skills/webdev/SKILL.md; \
+      install -m 0755 /tmp/pg-dev /usr/local/bin/pg-dev \
+      && install -D -m 0644 /tmp/webdev-SKILL.md /etc/claude-code/.claude/skills/webdev/SKILL.md; \
     fi
 
 # ---- entrypoint -------------------------------------------------------------
@@ -974,7 +999,7 @@ RUN --mount=type=bind,source=box-init,target=/tmp/box-init \
     install -m 0755 /tmp/box-init /tmp/claude-start /usr/local/bin/
 
 LABEL org.opencontainers.image.title="Claude Code workstation" \
-      org.opencontainers.image.description="Claude Code and Codex with Rust, Python, R, Lean 4 and Mathlib, data analysis, scraping, LLM evaluation, a profiling/disassembly toolchain, and docker" \
+      org.opencontainers.image.description="Claude Code and Codex with Rust, Python, R, Lean 4 and Mathlib, data analysis, scraping, LLM evaluation, a profiling/disassembly toolchain, and docker and PostgreSQL" \
       org.opencontainers.image.base.name="docker.io/library/node:26-trixie-slim"
 
 USER $USERNAME

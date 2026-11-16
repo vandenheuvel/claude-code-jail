@@ -1,0 +1,196 @@
+#!/bin/bash
+# pg-dev [start|url [DB]|status|stop]
+#
+# A PostgreSQL server for the project this container was started on, with its
+# data in the home volume, so that the next session finds the database as this
+# one left it: schema, migrations, test data.
+#
+#   pg-dev, pg-dev start  start it, creating the cluster the first time, and
+#                         print its URL on stdout
+#   pg-dev url [DB]       the same, for database DB (default `claude`), which
+#                         is created if it does not exist yet:
+#                           export DATABASE_URL=$(pg-dev url myapp)
+#   pg-dev status         where it is, whether it is running, and where
+#   pg-dev stop           stop it, if this container is the one running it
+#
+# The server listens on localhost:5432 (PGDEV_PORT, else PGPORT, to move it) and
+# on /run/postgresql, where psql looks by default, so bare `psql`, `createdb`
+# and `pg_dump` reach it with no options. Every local connection is trusted:
+# the superuser is `claude`, a second superuser `postgres` exists for the
+# projects whose .env says postgres://postgres:postgres@localhost/..., and any
+# password is accepted.
+#
+# One cluster per project, keyed on the directory this container was started
+# on (the mount the working directory is in), so subdirectories and worktrees
+# share it; PGDEV_PROJECT=<path> names another. Clusters live in
+# ~/.local/share/pg-dev/<name>-<hash>, each with the project's path in a file
+# called `project`, the server log in `log`, and the data in `data`.
+#
+# Two sessions on the same project share one server. A lock in the cluster
+# directory is held by the server for as long as it runs, and a second
+# container that finds it held does not start another server on the same data
+# -- which would corrupt it -- but forwards its own localhost:5432 and
+# /run/postgresql socket to the running one through a socket in the cluster
+# directory. When the container running the server ends, the server goes with
+# it; `pg-dev` in the other then starts it there. A server killed with its
+# container recovers from its WAL at the next start, as after a power cut.
+set -euo pipefail
+
+say() { printf 'pg-dev: %s\n' "$*" >&2; }
+die() { say "$*"; exit 1; }
+
+PGBIN="$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | sort -V | tail -n1)"
+[ -n "$PGBIN" ] && [ -x "$PGBIN/postgres" ] \
+  || die "no PostgreSQL server in this image (built with WITH_WEBDEV=0?)"
+major="${PGBIN%/bin}"; major="${major##*/}"
+[ "$(id -u)" != 0 ] || die "PostgreSQL refuses to run as root; run pg-dev as the container user"
+
+project="${PGDEV_PROJECT:-}"
+if [ -z "$project" ]; then
+  project="$(findmnt -n -o TARGET -T "$PWD" 2>/dev/null || true)"
+  [ -n "$project" ] && [ "$project" != / ] || project="$PWD"
+fi
+project="$(cd -- "$project" 2>/dev/null && pwd || printf '%s' "$project")"
+
+# The directory name is the project's, cut short and made safe, plus a hash of
+# its whole path: two projects called `app` stay apart, and the socket path in
+# it stays well inside the 107 bytes a Unix socket path may have.
+base="${project##*/}"; base="${base//[^A-Za-z0-9._-]/_}"; base="${base:0:24}"
+key="${base:-root}-$(printf '%s' "$project" | sha256sum | cut -c1-8)"
+dir="${PGDEV_HOME:-$HOME/.local/share/pg-dev}/$key"
+data="$dir/data"
+port="${PGDEV_PORT:-${PGPORT:-5432}}"
+rundir=/run/postgresql
+fwdpid="$rundir/pg-dev-forward.pid"
+
+# The pid namespace tells containers apart. A pid read from postmaster.pid
+# means nothing in any other one, and signalling it there would hit whatever
+# process happens to have that number.
+here="$(readlink /proc/self/ns/pid)"
+owner() { cat "$dir/owner" 2>/dev/null || true; }
+
+# Held by a server in this container or another; free once no server is.
+locked() { [ -e "$dir/lock" ] && ! flock -n "$dir/lock" true; }
+
+running_here() {
+  [ "$(owner)" = "$here" ] && locked \
+    && "$PGBIN/pg_ctl" -D "$data" status >/dev/null 2>&1
+}
+
+forwarding() { [ -s "$fwdpid" ] && kill -0 "$(cat "$fwdpid")" 2>/dev/null; }
+
+stop_forward() {
+  if [ -s "$fwdpid" ]; then
+    kill "$(cat "$fwdpid")" 2>/dev/null || true
+    rm -f "$fwdpid"
+  fi
+  if [ -L "$rundir/.s.PGSQL.$port" ]; then rm -f "$rundir/.s.PGSQL.$port"; fi
+}
+
+url() { printf 'postgres://claude@localhost:%s/%s\n' "$port" "${1:-claude}"; }
+
+init() {
+  say "creating a PostgreSQL $major cluster for $project in $dir"
+  mkdir -p "$dir"
+  "$PGBIN/initdb" -D "$data" -U claude --auth=trust --encoding=UTF8 \
+    --locale=C.UTF-8 -c listen_addresses=localhost >"$dir/initdb.log" 2>&1 \
+    || { cat "$dir/initdb.log" >&2; die "initdb failed"; }
+}
+
+start() {
+  mkdir -p "$dir"
+  printf '%s\n' "$project" >"$dir/project"
+  [ -s "$data/PG_VERSION" ] || init
+  [ "$(cat "$data/PG_VERSION")" = "$major" ] \
+    || die "$data is a PostgreSQL $(cat "$data/PG_VERSION") cluster and this image has $major; move it aside to start a new one"
+
+  running_here && return 0
+
+  exec 9>>"$dir/lock"
+  if flock -n 9; then
+    # No server holds the lock, so postmaster.pid and the socket's lock file
+    # are leftovers from a container that ended with its server running. The
+    # pid in them may well be alive here, as some other process, and the
+    # server would refuse to start over it.
+    stop_forward
+    rm -f "$data/postmaster.pid" "$dir"/.s.PGSQL.*
+    if [ -f "$dir/log" ] && [ "$(stat -c %s "$dir/log")" -gt 10485760 ]; then
+      mv -f "$dir/log" "$dir/log.1"
+    fi
+    printf '%s\n' "$here" >"$dir/owner"
+    # The server inherits fd 9 and with it the lock, which it then holds for
+    # as long as it runs, in whatever container it runs. Its second socket,
+    # in the cluster directory, is the one other containers can reach.
+    "$PGBIN/pg_ctl" -D "$data" -l "$dir/log" -w -t 60 -s \
+        -o "-p $port -k '$rundir,$dir'" start \
+      || { tail -n 20 "$dir/log" >&2; die "the server did not start; the log is $dir/log"; }
+    exec 9>&-
+    psql -h "$rundir" -p "$port" -d postgres -qX -v ON_ERROR_STOP=1 >/dev/null <<'SQL'
+SELECT 'CREATE DATABASE claude' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'claude')\gexec
+SELECT 'CREATE ROLE postgres SUPERUSER LOGIN' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'postgres')\gexec
+SQL
+    say "PostgreSQL $major running for $project"
+  else
+    exec 9>&-
+    forwarding && return 0
+    local sock="" s
+    for s in "$dir"/.s.PGSQL.*; do
+      if [ -S "$s" ]; then sock="$s"; break; fi
+    done
+    [ -n "$sock" ] || die "another container holds $dir/lock but has no socket in it"
+    ln -sfn "$sock" "$rundir/.s.PGSQL.$port"
+    setsid -f sh -c 'echo $$ >"$1"; exec socat TCP-LISTEN:"$2",bind=127.0.0.1,reuseaddr,fork UNIX-CONNECT:"$3"' \
+      sh "$fwdpid" "$port" "$sock" </dev/null >/dev/null 2>&1
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null && break
+      sleep 0.1
+    done
+    say "PostgreSQL for $project is running in another session; localhost:$port here forwards to it"
+  fi
+}
+
+status() {
+  printf 'project  %s\ncluster  %s\n' "$project" "$dir"
+  if [ ! -s "$data/PG_VERSION" ]; then
+    printf 'state    not created yet -- pg-dev starts it\n'
+  elif running_here; then
+    printf 'state    running here, PostgreSQL %s\nurl      %s\n' "$(cat "$data/PG_VERSION")" "$(url)"
+  elif locked && forwarding; then
+    printf 'state    running in another session, forwarded here\nurl      %s\n' "$(url)"
+  elif locked; then
+    printf 'state    running in another session -- pg-dev forwards it here\n'
+  else
+    printf 'state    stopped -- pg-dev starts it\n'
+  fi
+  if [ -d "$data" ]; then printf 'size     %s\n' "$(du -sh "$data" 2>/dev/null | cut -f1)"; fi
+}
+
+stop() {
+  if running_here; then
+    "$PGBIN/pg_ctl" -D "$data" -w -s -m fast stop
+    say "stopped"
+  elif forwarding; then
+    stop_forward
+    say "stopped forwarding; the server keeps running in the session that started it"
+  elif locked; then
+    die "the server is running in another session; stop it there"
+  else
+    say "not running"
+  fi
+}
+
+case "${1:-start}" in
+  start)  start; url ;;
+  url)    start
+          db="${2:-claude}"
+          if ! psql -h "$rundir" -p "$port" -d postgres -qAtX \
+                 -c "SELECT 1 FROM pg_database WHERE datname = '${db//\'/\'\'}'" | grep -q 1; then
+            createdb -h "$rundir" -p "$port" -- "$db"
+            say "created database $db"
+          fi
+          url "$db" ;;
+  status) status ;;
+  stop)   stop ;;
+  -h|--help|help) sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "$0" ;;
+  *)      die "unknown command '$1'; see pg-dev --help" ;;
+esac

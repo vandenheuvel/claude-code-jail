@@ -75,7 +75,7 @@ crashing on real pages, in ways that don't name the cause. It also unmasks
 trade, and it is spelled out under
 [Two agents, one image](#two-agents-one-image). And it gives each container
 `/dev/net/tun` and a scratch volume, for the containers a session runs inside
-it (see [Containers](#containers)).
+it (see [Containers and databases](#containers-and-databases)).
 
 Every Claude Code session in the box runs with `--dangerously-skip-permissions`:
 it never stops to ask before running a command or editing a file, since the
@@ -236,7 +236,8 @@ make codex ARGS='-s workspace-write -a on-request'   # or keep its sandbox
 | **Lean** | Lean 4 via elan, the newest Mathlib release already built, the Lean REPL, `lean-lsp-mcp`, Loogle with its index of Mathlib, and the lean4-skills workflow; `lean-init` to start a project on it. Mathlib is a companion image that `make lean` builds. See [Lean proofs](#lean-proofs) |
 | **LLM eval** | `anthropic` `openai` `litellm` `tiktoken` `tokenizers` `huggingface-hub` `datasets`; harnesses `inspect-ai` (Python) and `promptfoo` (CLI) |
 | **Documents** | pandoc, Quarto, full TeX Live (`latexmk` `biber` `xetex` `luatex`), `latexdiff` and `latexdiff-vc` for marked-up revisions, graphviz, gnuplot, ghostscript, poppler, qpdf, ImageMagick, ffmpeg, librsvg; `auto-multiple-choice` for multiple-choice exams marked from scans |
-| **Containers** | `docker`, `docker compose` and `podman`: rootless podman nested in the box, with the Docker API socket for compose, testcontainers and the SDKs. See [Containers](#containers) |
+| **Containers** | `docker`, `docker compose` and `podman`: rootless podman nested in the box, with the Docker API socket for compose, testcontainers and the SDKs. See [Containers and databases](#containers-and-databases) |
+| **Web** | PostgreSQL 17 with pgvector, and `pg-dev` to keep one per project from session to session |
 | **CLI** | `rg` `fd` `bat` `fzf` `delta` `gh` `git-lfs` `just` `direnv` `entr` `tmux` `parallel` `moreutils` `shellcheck` `shfmt` `ctags` `github-latest` `bwrap` `ss` `ip` `lsof` `xxd`, and passwordless `sudo` |
 
 ---
@@ -290,15 +291,18 @@ using a webfont still needs `--wait-for 'document.fonts.ready'`.
 
 ---
 
-## Containers
+## Containers and databases
 
 A session can run containers of its own — a project's `compose.yaml`, a Redis to
-test against, the Dockerfile it is editing.
+test against, the Dockerfile it is editing — and keep a PostgreSQL database
+from one session to the next.
 
 ```sh
 docker compose up -d --wait                # the project's stack
 docker run -d -p 6379:6379 redis:8         # published on the container's localhost
 docker build -t app . && docker run --rm app
+pg-dev                                     # this project's PostgreSQL; prints its URL
+export DATABASE_URL=$(pg-dev url app)      # ...with a database `app` in it
 ```
 
 **`docker` is podman.** Rootless podman, nested in the container's own user
@@ -329,9 +333,9 @@ again and leaves nothing behind. A store in the home volume would keep them,
 but podman keeps its containers' state beside its images, and a podman that
 finds containers there it has not started since boot resets them as
 leftovers — two sessions sharing one store would keep doing that to each other.
-What should outlive a session goes in a bind mount from the project. A session
-that crashes can leave its volume behind; `podman volume prune` on the host
-collects it.
+What should outlive a session goes in a bind mount from the project, or, for
+PostgreSQL, in pg-dev. A session that crashes can leave its volume behind;
+`podman volume prune` on the host collects it.
 
 **Networking.** Published ports land on the container's localhost, where the
 session's `curl`, browser and tests look. Compose projects and other custom
@@ -342,9 +346,34 @@ every container on such a network fails with `netavark: create veth pair:
 Netlink error: Operation not supported (os error 95)`. A reboot fixes it.
 Single containers on the default network do not use veth and keep working.
 
-**The webdev skill** tells a Claude Code session all of this, so that it does
-not install Docker. Like the lean skill it is on in every session, at 136
-characters of skill description, with no process and no hook.
+**PostgreSQL.** `pg-dev` runs PostgreSQL 17 for the directory the container was
+started on, with the data in the home volume under `~/.local/share/pg-dev`, so
+the next session finds the schema, migrations and rows where this one left
+them. One cluster per directory, which its subdirectories and worktrees share.
+It listens on `localhost:5432` and on `/run/postgresql`, so bare `psql`,
+`createdb` and `pg_dump` need no options. Every local connection is trusted,
+and besides `claude` there is a `postgres` superuser, so a `.env` reading
+`postgres://postgres:postgres@localhost:5432/app` works as written. pgvector
+and the contrib extensions are installed, and `initdb`, `pg_ctl` and
+`postgres` are on `PATH` for test harnesses that start throwaway servers.
+
+Nothing starts it for you; a session runs `pg-dev` when a project needs a
+database. Two sessions on one directory share one server: the second forwards
+its `localhost:5432` to the first's socket in the cluster directory rather than
+start another server on the same data. When the first session ends its server
+goes with it, and `pg-dev` in the second starts it there. A server killed with
+its container recovers from its WAL at the next start.
+
+```sh
+pg-dev status     # project, cluster directory, state, size
+pg-dev stop
+pg-dev --help
+```
+
+**The webdev skill** tells a Claude Code session all of this, so that it uses
+pg-dev rather than a throwaway postgres container and does not install Docker.
+Like the lean skill it is on in every session, at 158 characters of skill
+description, with no process and no hook.
 
 ---
 
@@ -480,7 +509,7 @@ cache and branch misses, `-M TopdownL1`), `perf record` with call graphs,
 refuses `perf_event_open` outright, along with `setarch -R`, NUMA page
 placement and io_uring, so `make` starts every container under podman's own
 profile with those allowed, and otherwise changed only for
-[nested containers](#containers) (under docker, which keeps
+[nested containers](#containers-and-databases) (under docker, which keeps
 its profile inside the engine, seccomp is off instead; `make SECCOMPFLAGS=` puts
 the engine's default back). No capability is added — under podman that would
 stop bubblewrap, and with it both agents' sandboxes — so what perf may do is
@@ -513,8 +542,8 @@ Playwrights, around 2 GB of which 1.7 GB is browser), `WITH_QUARTO`,
 `WITH_GHIDRA` (Ghidra and its JDK), `WITH_AMC` (auto-multiple-choice, which
 depends on TeX Live and so also goes with `WITH_LATEX=0`), `WITH_LEAN` (elan,
 `lean-lsp-mcp`, `loogle` and the `lean` skill; Mathlib itself is the
-[Lean image](#lean-proofs)), `WITH_WEBDEV` (podman as `docker` and compose, and
-the `webdev` skill).
+[Lean image](#lean-proofs)), `WITH_WEBDEV` (podman as `docker` and compose, the
+PostgreSQL server, `pg-dev` and the `webdev` skill; `psql` stays).
 `WITH_TORCH=1` adds CPU PyTorch, `transformers`, `accelerate` and
 `sentence-transformers` — left out by default because most evaluation here is
 API-side and it costs about a gigabyte. Also `RUST_VERSION=` (default `stable`)
@@ -621,8 +650,8 @@ but only `--liste-fichiers` is accepted, and the misspelling ends with the list
 file itself loaded as a scan and OpenCV aborting on an empty image.
 
 **What isn't here.** Geospatial (GDAL/PROJ/GEOS and `sf`), CUDA, and databases
-beyond SQLite and DuckDB. All are one `sudo apt-get install` away, and the apt
-cache is intact — or, for a database, one `docker run`.
+beyond SQLite, DuckDB and PostgreSQL. All are one `sudo apt-get install` away,
+and the apt cache is intact — or, for a database, one `docker run`.
 
 ---
 

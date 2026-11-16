@@ -1,11 +1,11 @@
 ---
 name: webdev
-description: Docker and compose -- already in this container, as rootless podman. Use before installing Docker, or pulling or starting any container.
+description: Docker and compose, and a persistent PostgreSQL per project (pg-dev) -- all already in this container. Use before installing, pulling or starting any of them.
 ---
 
 # Web development in this container
 
-Nothing here needs installing. Do not apt-get Docker.
+Nothing here needs installing. Do not apt-get Docker or PostgreSQL.
 
 ## Containers
 
@@ -17,10 +17,29 @@ which starts podman's API service on the first connection.
 - `-p 8080:80` publishes on this container's localhost: `curl localhost:8080`.
 - Images, containers and volumes last as long as this session, and are gone in
   the next one. Data that has to outlive the session goes in a bind mount from
-  the project or home.
+  the project or home, or, for PostgreSQL, in pg-dev.
 - `netavark: create veth pair: ... Operation not supported (os error 95)` on a
   compose or custom network means the host kernel cannot load its `veth`
   module, usually because it was upgraded without a reboot. Tell the user.
   Meanwhile a single container on the default network works, and a Docker API
   client can ask for `network_mode: pasta`.
+
+## PostgreSQL: `pg-dev`
+
+A server for this project whose data persists across sessions, in the home
+volume. Use it instead of a postgres container whenever the data matters.
+
+```sh
+pg-dev                                # start; prints postgres://claude@localhost:5432/claude
+export DATABASE_URL=$(pg-dev url app) # creates database `app` if needed
+pg-dev status                         # where the data is, running or not
+pg-dev stop
+```
+
+Bare `psql`, `createdb` and `pg_dump` connect with no options. Auth is trust:
+roles `claude` and `postgres` are superusers and any password works, so a
+project's `postgres://postgres:postgres@localhost:5432/...` works as written
+once its database exists. pgvector and the contrib extensions are installed.
+`initdb`, `pg_ctl` and `postgres` are on PATH for test harnesses that start
+throwaway servers. `pg-dev --help` has the rest.
 

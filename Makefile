@@ -361,7 +361,7 @@ SECCOMPFLAGS ?= --security-opt seccomp='$(or $(SECCOMPFILE),unconfined)'
 # start since boot takes them for leftovers and resets them -- two sessions
 # sharing the home volume's store would each do that to the other's. So images
 # are pulled once per session, and anything a session wants to keep goes in a
-# bind mount.
+# bind mount (or, for PostgreSQL, pg-dev).
 NESTFLAGS := $(if $(wildcard /dev/net/tun),--device /dev/net/tun) \
              -v /home/claude/.local/share/containers
 
