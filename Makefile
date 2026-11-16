@@ -529,7 +529,7 @@ versions: image
 	           "gh --version" "duckdb --version" "hyperfine --version" \
 	           "valgrind --version" "perf --version" "bwrap --version" \
 	           "chromium --version" "playwright --version" \
-	           "psql --version" \
+	           "psql --version" "sccache --version" \
 	           "lean --version" "lake --version" "lean-lsp-mcp --version"; do \
 	    printf "%-22s %s\n" "$${c%% *}" "$$($$c 2>&1 | head -n1)"; \
 	  done'

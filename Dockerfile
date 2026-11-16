@@ -845,6 +845,30 @@ RUN --mount=type=bind,source=claude-permission-hook,target=/tmp/claude-permissio
  && echo '{"hooks":{"PermissionRequest":[{"hooks":[{"type":"command","command":"/usr/local/bin/claude-permission-hook"}]}]}}' \
       > /etc/claude-code/managed-settings.d/claude-box.json
 
+# ---- sccache ----------------------------------------------------------------
+# Every rustc call cargo makes goes through sccache, so compiled crates outlive
+# the target/ they were built into. target/ in the working folder belongs to
+# one checkout: a git worktree, a fresh clone, `cargo clean`, or the next
+# project on the same axum and tokio all start from nothing. sccache keys each
+# compilation on its inputs and keeps the output in ~/.cache/sccache, in the
+# home volume, so those builds take every unchanged dependency from the cache,
+# whichever session built it. It caps the cache at SCCACHE_CACHE_SIZE (10G by
+# default) and drops the least recently used. What it cannot cache it passes
+# straight to rustc: incremental builds, which in the dev profile are the
+# workspace's own crates, and the probes build scripts run.
+#
+# It is set in the config.toml of CARGO_HOME, the weakest place cargo reads
+# config from: a project's own .cargo/config.toml can name a different
+# wrapper, and `RUSTC_WRAPPER= cargo build` runs one build without any.
+#
+# After the agents, so that changing it rebuilds nothing but this and the
+# layers below.
+RUN if [ "$WITH_RUST" = "1" ]; then \
+      printf '[build]\nrustc-wrapper = "%s"\n' /opt/rust/cargo/bin/sccache \
+        > /opt/rust/cargo/config.toml \
+      && chmod 0666 /opt/rust/cargo/config.toml; \
+    fi
+
 # ---- entrypoint -------------------------------------------------------------
 # claude-start writes the image's defaults for Claude Code into the user
 # settings in the home volume, each only while it is unset there, and then

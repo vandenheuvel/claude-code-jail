@@ -222,7 +222,7 @@ make codex ARGS='-s workspace-write -a on-request'   # or keep its sandbox
 | | |
 |---|---|
 | **Agents** | `claude` (Claude Code) and `codex` (Codex CLI), a layer each at the end of the build, so refreshing them never touches the toolchain below |
-| **Rust** | rustup stable, `rustfmt` `clippy` `rust-src` `rust-analyzer` `llvm-tools`; `mold` and `lld` linkers |
+| **Rust** | rustup stable, `rustfmt` `clippy` `rust-src` `rust-analyzer` `llvm-tools`; `mold` and `lld` linkers; every build through `sccache` |
 | **Python** | 3.13 in a venv at `/opt/venv`, first on `PATH`; `uv` for everything else |
 | **R** | 4.5 with ~70 prebuilt `r-cran-*` packages; Posit binary mirror configured for the rest |
 | **JS/TS** | node 26, `pnpm` `tsx` `typescript` `biome` `prettier` `vitest` |
@@ -521,8 +521,18 @@ would hide every `r-cran-*` package.
 
 **Rust.** `CARGO_HOME` and `RUSTUP_HOME` are under `/opt/rust` and writable, so
 `cargo install` and `rustup toolchain add nightly` work as the normal user.
-`sccache` is installed but not wired in — export `RUSTC_WRAPPER=sccache` per
-project rather than globally, where it surprises build scripts.
+
+**Build cache.** Every cargo build goes through `sccache`, set as
+`build.rustc-wrapper` in `$CARGO_HOME/config.toml`, and its cache is
+`~/.cache/sccache` in the home volume. `target/` stays in the project, as
+before; what sccache adds is a cache that outlives it, shared by every project,
+worktree and session, so a fresh clone, a new worktree or a `cargo clean` takes
+its dependencies from the cache instead of compiling them again. It cannot
+cache incremental compilation — in the dev profile, the workspace's own
+crates — and passes those to rustc untouched. The cache is capped at 10 GB,
+least recently used out first (`SCCACHE_CACHE_SIZE`); `sccache --show-stats`
+shows how it is doing. A project's own `.cargo/config.toml` can name another
+wrapper, and `RUSTC_WRAPPER= cargo build` runs one build without any.
 
 **Git.** `safe.directory` is `*` system-wide, so bind-mounted repositories work
 regardless of who owns them on the host. `delta` is the pager.
