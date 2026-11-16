@@ -565,7 +565,7 @@ versions: image
 	           "valgrind --version" "perf --version" "bwrap --version" \
 	           "chromium --version" "playwright --version" \
 	           "podman --version" "docker-compose version" "psql --version" \
-	           "sccache --version" \
+	           "sccache --version" "trunk --version" "cargo-leptos --version" \
 	           "lean --version" "lake --version" "lean-lsp-mcp --version"; do \
 	    printf "%-22s %s\n" "$${c%% *}" "$$($$c 2>&1 | head -n1)"; \
 	  done'

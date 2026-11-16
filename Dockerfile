@@ -22,8 +22,8 @@
 #   WITH_LEAN=0      drop elan, lean-lsp-mcp, loogle and the lean skill (Mathlib
 #                    itself is a separate image, lean/Dockerfile, built by
 #                    `make lean`)
-#   WITH_WEBDEV=0    drop docker (rootless podman) and compose, and the
-#                    PostgreSQL server and pg-dev
+#   WITH_WEBDEV=0    drop docker (rootless podman) and compose, the PostgreSQL
+#                    server and pg-dev, and the Rust/wasm web tools
 #   USER_UID/USER_GID  match your host account so bind mounts stay writable
 #
 # `node:26-slim` resolves to Debian 13 "trixie". Pinned explicitly: every apt
@@ -757,7 +757,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache-${TARGE
       apt-get update && $APT \
         podman podman-docker docker-compose crun conmon catatonit \
         uidmap passt netavark aardvark-dns libcap2-bin \
-        postgresql-common \
+        postgresql-common binaryen \
       && sed -ri 's/^#?\s*(create_main_cluster)\s*=.*/\1 = false/' /etc/postgresql-common/createcluster.conf \
       && grep -qx 'create_main_cluster = false' /etc/postgresql-common/createcluster.conf \
       && $APT postgresql postgresql-17-pgvector \
@@ -784,7 +784,35 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache-${TARGE
       && install -d -o "$USER_UID" -g "$USER_GID" \
            "/home/$USERNAME/.local" "/home/$USERNAME/.local/share" \
            "/home/$USERNAME/.local/share/containers" \
-      && podman --version && docker-compose version && initdb --version; \
+      && podman --version && docker-compose version && initdb --version \
+      && wasm-opt --version; \
+    fi
+
+# The Rust half of webdev: the wasm target and the build tools Rust web
+# frameworks expect. trunk bundles a client-side app (Yew, Leptos CSR, ...),
+# cargo-leptos builds and serves Leptos with SSR, wasm-pack makes npm packages,
+# and wasm-opt (binaryen, above) is what all three shrink their output with.
+# sqlx-cli runs migrations and `cargo sqlx prepare`; cargo-generate starts a
+# project from a template (`cargo generate leptos-rs/start-axum`).
+#
+# wasm-bindgen-cli is the latest release, and a project's wasm-bindgen crate
+# has to match it exactly or the CLI refuses, naming both versions. trunk,
+# cargo-leptos and wasm-pack fetch the matching one themselves, into
+# ~/.cache in the home volume, so only a bare `wasm-bindgen` call -- or the
+# wasm-bindgen-test-runner a wasm `cargo test` goes through -- ever meets the
+# mismatch, and `cargo binstall wasm-bindgen-cli@<version>` is the fix.
+#
+# The find is the agent layers' a+rwX, touching only what this layer added
+# rather than copying all of /opt/rust up into it.
+RUN --mount=type=cache,target=/opt/rust/cargo/registry,sharing=locked,id=cargo-reg-${TARGETARCH} \
+    if [ "$WITH_WEBDEV" = "1" ] && [ "$WITH_RUST" = "1" ]; then \
+      rustup target add wasm32-unknown-unknown \
+      && cargo binstall --no-confirm \
+           trunk wasm-bindgen-cli wasm-pack cargo-leptos sqlx-cli cargo-generate \
+      && find /opt/rust ! -type l \
+           \( ! -perm -0666 -o \( -type d -o -perm /0111 \) ! -perm -0111 \) \
+           -exec chmod a+rwX {} + \
+      && trunk --version && wasm-bindgen --version && sqlx --version; \
     fi
 
 # ---- coding agents ----------------------------------------------------------
@@ -962,10 +990,10 @@ RUN if [ "$WITH_RUST" = "1" ]; then \
 # pg-dev starts a PostgreSQL server for the project the container was started
 # on, with its data in the home volume, so the database is where the last
 # session left it; the script has the details. The webdev skill is how a
-# session learns that containers and pg-dev are already here, rather than
-# installing its own. Like the lean skill it is on in every session -- 158
-# characters of description, no process, no hook -- and it lives in the
-# managed-settings directory for the same reason.
+# session learns that containers, pg-dev and the Rust web tools are already
+# here, rather than installing its own. Like the lean skill it is on in every
+# session -- 187 characters of description, no process, no hook -- and
+# it lives in the managed-settings directory for the same reason.
 #
 # XDG_RUNTIME_DIR is set for every build, webdev or not, because podman is not
 # the only program that looks for it; DOCKER_HOST names podman's socket in it,
@@ -999,7 +1027,7 @@ RUN --mount=type=bind,source=box-init,target=/tmp/box-init \
     install -m 0755 /tmp/box-init /tmp/claude-start /usr/local/bin/
 
 LABEL org.opencontainers.image.title="Claude Code workstation" \
-      org.opencontainers.image.description="Claude Code and Codex with Rust, Python, R, Lean 4 and Mathlib, data analysis, scraping, LLM evaluation, a profiling/disassembly toolchain, and docker and PostgreSQL" \
+      org.opencontainers.image.description="Claude Code and Codex with Rust, Python, R, Lean 4 and Mathlib, data analysis, scraping, LLM evaluation, a profiling/disassembly toolchain, and docker, PostgreSQL and the Rust web toolchain" \
       org.opencontainers.image.base.name="docker.io/library/node:26-trixie-slim"
 
 USER $USERNAME

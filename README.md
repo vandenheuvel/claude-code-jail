@@ -237,7 +237,7 @@ make codex ARGS='-s workspace-write -a on-request'   # or keep its sandbox
 | **LLM eval** | `anthropic` `openai` `litellm` `tiktoken` `tokenizers` `huggingface-hub` `datasets`; harnesses `inspect-ai` (Python) and `promptfoo` (CLI) |
 | **Documents** | pandoc, Quarto, full TeX Live (`latexmk` `biber` `xetex` `luatex`), `latexdiff` and `latexdiff-vc` for marked-up revisions, graphviz, gnuplot, ghostscript, poppler, qpdf, ImageMagick, ffmpeg, librsvg; `auto-multiple-choice` for multiple-choice exams marked from scans |
 | **Containers** | `docker`, `docker compose` and `podman`: rootless podman nested in the box, with the Docker API socket for compose, testcontainers and the SDKs. See [Containers and databases](#containers-and-databases) |
-| **Web** | PostgreSQL 17 with pgvector, and `pg-dev` to keep one per project from session to session |
+| **Web** | PostgreSQL 17 with pgvector, and `pg-dev` to keep one per project from session to session; for Rust, the `wasm32-unknown-unknown` target, `trunk` `cargo-leptos` `wasm-pack` `wasm-bindgen` `wasm-opt` `sqlx-cli` `cargo-generate` |
 | **CLI** | `rg` `fd` `bat` `fzf` `delta` `gh` `git-lfs` `just` `direnv` `entr` `tmux` `parallel` `moreutils` `shellcheck` `shfmt` `ctags` `github-latest` `bwrap` `ss` `ip` `lsof` `xxd`, and passwordless `sudo` |
 
 ---
@@ -370,9 +370,17 @@ pg-dev stop
 pg-dev --help
 ```
 
+**Rust web.** The `wasm32-unknown-unknown` target; `trunk` for client-side apps,
+`cargo leptos` for Leptos with SSR, `wasm-pack` for npm packages, `wasm-opt`
+(binaryen) to shrink the output, `sqlx` (sqlx-cli) for migrations and
+`cargo generate` for templates. `wasm-bindgen` is the latest release, and a
+project's `wasm-bindgen` crate must match it exactly; trunk, cargo-leptos and
+wasm-pack fetch the matching one themselves, and for anything else
+`cargo binstall wasm-bindgen-cli@<version>` is quick.
+
 **The webdev skill** tells a Claude Code session all of this, so that it uses
 pg-dev rather than a throwaway postgres container and does not install Docker.
-Like the lean skill it is on in every session, at 158 characters of skill
+Like the lean skill it is on in every session, at 187 characters of skill
 description, with no process and no hook.
 
 ---
@@ -543,7 +551,8 @@ Playwrights, around 2 GB of which 1.7 GB is browser), `WITH_QUARTO`,
 depends on TeX Live and so also goes with `WITH_LATEX=0`), `WITH_LEAN` (elan,
 `lean-lsp-mcp`, `loogle` and the `lean` skill; Mathlib itself is the
 [Lean image](#lean-proofs)), `WITH_WEBDEV` (podman as `docker` and compose, the
-PostgreSQL server, `pg-dev` and the `webdev` skill; `psql` stays).
+PostgreSQL server, `pg-dev` and the `webdev` skill, and the Rust web tools;
+`psql` stays).
 `WITH_TORCH=1` adds CPU PyTorch, `transformers`, `accelerate` and
 `sentence-transformers` — left out by default because most evaluation here is
 API-side and it costs about a gigabyte. Also `RUST_VERSION=` (default `stable`)

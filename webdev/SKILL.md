@@ -1,11 +1,12 @@
 ---
 name: webdev
-description: Docker and compose, and a persistent PostgreSQL per project (pg-dev) -- all already in this container. Use before installing, pulling or starting any of them.
+description: Docker and compose, a persistent PostgreSQL per project (pg-dev), and the Rust/wasm web toolchain -- all already in this container. Use before installing, pulling or starting any of them.
 ---
 
 # Web development in this container
 
-Nothing here needs installing. Do not apt-get Docker or PostgreSQL.
+Nothing here needs installing. Do not apt-get Docker or PostgreSQL, and do not
+curl an installer for trunk, wasm-pack or wasm-bindgen.
 
 ## Containers
 
@@ -43,3 +44,15 @@ once its database exists. pgvector and the contrib extensions are installed.
 `initdb`, `pg_ctl` and `postgres` are on PATH for test harnesses that start
 throwaway servers. `pg-dev --help` has the rest.
 
+## Rust web
+
+The `wasm32-unknown-unknown` target, and `trunk`, `cargo leptos`, `wasm-pack`,
+`wasm-bindgen` (with `wasm-bindgen-test-runner`), `wasm-opt`, `sqlx`
+(sqlx-cli) and `cargo generate`.
+
+- `wasm-bindgen` must match the project's `wasm-bindgen` crate exactly. trunk,
+  cargo-leptos and wasm-pack fetch the right one themselves; for a bare
+  `wasm-bindgen` call, `cargo binstall -y wasm-bindgen-cli@<that version>`.
+- Every build goes through sccache (`sccache --show-stats`), so dependencies
+  compiled in any earlier session or checkout come from its cache.
+  `RUSTC_WRAPPER= cargo build` bypasses it.
