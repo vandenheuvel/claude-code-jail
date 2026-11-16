@@ -73,7 +73,9 @@ mounts `~/.gitconfig` read-only so commits are attributed, forwards
 crashing on real pages, in ways that don't name the cause. It also unmasks
 `/proc`, without which neither agent's sandbox can start; that one is a
 trade, and it is spelled out under
-[Two agents, one image](#two-agents-one-image).
+[Two agents, one image](#two-agents-one-image). And it gives each container
+`/dev/net/tun` and a scratch volume, for the containers a session runs inside
+it (see [Containers](#containers)).
 
 Every Claude Code session in the box runs with `--dangerously-skip-permissions`:
 it never stops to ask before running a command or editing a file, since the
@@ -234,6 +236,7 @@ make codex ARGS='-s workspace-write -a on-request'   # or keep its sandbox
 | **Lean** | Lean 4 via elan, the newest Mathlib release already built, the Lean REPL, `lean-lsp-mcp`, Loogle with its index of Mathlib, and the lean4-skills workflow; `lean-init` to start a project on it. Mathlib is a companion image that `make lean` builds. See [Lean proofs](#lean-proofs) |
 | **LLM eval** | `anthropic` `openai` `litellm` `tiktoken` `tokenizers` `huggingface-hub` `datasets`; harnesses `inspect-ai` (Python) and `promptfoo` (CLI) |
 | **Documents** | pandoc, Quarto, full TeX Live (`latexmk` `biber` `xetex` `luatex`), `latexdiff` and `latexdiff-vc` for marked-up revisions, graphviz, gnuplot, ghostscript, poppler, qpdf, ImageMagick, ffmpeg, librsvg; `auto-multiple-choice` for multiple-choice exams marked from scans |
+| **Containers** | `docker`, `docker compose` and `podman`: rootless podman nested in the box, with the Docker API socket for compose, testcontainers and the SDKs. See [Containers](#containers) |
 | **CLI** | `rg` `fd` `bat` `fzf` `delta` `gh` `git-lfs` `just` `direnv` `entr` `tmux` `parallel` `moreutils` `shellcheck` `shfmt` `ctags` `github-latest` `bwrap` `ss` `ip` `lsof` `xxd`, and passwordless `sudo` |
 
 ---
@@ -284,6 +287,64 @@ hand-rolled `docker run` wants the same flag, or `--disable-dev-shm-usage`.
 **Fonts.** DejaVu, Liberation, Noto, Noto CJK and colour emoji are installed, so
 a screenshot of a non-Latin page is text rather than a row of tofu boxes. A page
 using a webfont still needs `--wait-for 'document.fonts.ready'`.
+
+---
+
+## Containers
+
+A session can run containers of its own — a project's `compose.yaml`, a Redis to
+test against, the Dockerfile it is editing.
+
+```sh
+docker compose up -d --wait                # the project's stack
+docker run -d -p 6379:6379 redis:8         # published on the container's localhost
+docker build -t app . && docker run --rm app
+```
+
+**`docker` is podman.** Rootless podman, nested in the container's own user
+namespace, answers to `docker` (podman-docker), and `docker compose` is
+docker-compose v2 talking to it. Nothing from the host is mounted for it. The
+usual way to give a container docker is the host's socket, and that hands a
+session the host: whatever the host's engine can mount, the session can read.
+Nested, everything a session starts is confined the way the session is. It
+takes four adjustments, each a silent or misleading failure without it:
+`newuidmap` with file capabilities rather than setuid (`write to uid_map
+failed: Operation not permitted`), an `/etc/subuid` covering the container's
+other uids, `sethostname`, `setdomainname` and `setns` allowed through seccomp
+(the kernel still requires CAP_SYS_ADMIN over the namespace concerned, which a
+process only has in one it created), and `/dev/net/tun` for pasta, which
+networks each nested container. Short image names resolve on Docker Hub, as
+they do for docker: Debian's podman knows only a list of aliases otherwise.
+
+**The API socket.** `DOCKER_HOST` and `/var/run/docker.sock` both reach podman's
+API service, for docker compose, testcontainers, the Docker SDKs and anything
+else that speaks the Docker API. The service holds about 90 MB while it runs,
+so until something connects it does not: `box-init`, which every container
+starts through, leaves a listener of a few megabytes on the socket, and the
+first connection turns it into the service.
+
+**Per session.** Images, containers and their volumes live in an anonymous
+volume that `--rm` deletes with the container, so each session pulls its images
+again and leaves nothing behind. A store in the home volume would keep them,
+but podman keeps its containers' state beside its images, and a podman that
+finds containers there it has not started since boot resets them as
+leftovers — two sessions sharing one store would keep doing that to each other.
+What should outlive a session goes in a bind mount from the project. A session
+that crashes can leave its volume behind; `podman volume prune` on the host
+collects it.
+
+**Networking.** Published ports land on the container's localhost, where the
+session's `curl`, browser and tests look. Compose projects and other custom
+networks are bridges, which need the host kernel to load `veth`. It does that
+on demand — except on a host that upgraded its kernel and has not rebooted,
+which is routine on Arch: the running kernel's modules are gone from disk, and
+every container on such a network fails with `netavark: create veth pair:
+Netlink error: Operation not supported (os error 95)`. A reboot fixes it.
+Single containers on the default network do not use veth and keep working.
+
+**The webdev skill** tells a Claude Code session all of this, so that it does
+not install Docker. Like the lean skill it is on in every session, at 136
+characters of skill description, with no process and no hook.
 
 ---
 
@@ -418,7 +479,8 @@ cache and branch misses, `-M TopdownL1`), `perf record` with call graphs,
 `samply`, `cargo flamegraph`, PAPI. A container's default seccomp profile
 refuses `perf_event_open` outright, along with `setarch -R`, NUMA page
 placement and io_uring, so `make` starts every container under podman's own
-profile with those allowed and nothing else changed (under docker, which keeps
+profile with those allowed, and otherwise changed only for
+[nested containers](#containers) (under docker, which keeps
 its profile inside the engine, seccomp is off instead; `make SECCOMPFLAGS=` puts
 the engine's default back). No capability is added — under podman that would
 stop bubblewrap, and with it both agents' sandboxes — so what perf may do is
@@ -451,7 +513,8 @@ Playwrights, around 2 GB of which 1.7 GB is browser), `WITH_QUARTO`,
 `WITH_GHIDRA` (Ghidra and its JDK), `WITH_AMC` (auto-multiple-choice, which
 depends on TeX Live and so also goes with `WITH_LATEX=0`), `WITH_LEAN` (elan,
 `lean-lsp-mcp`, `loogle` and the `lean` skill; Mathlib itself is the
-[Lean image](#lean-proofs)).
+[Lean image](#lean-proofs)), `WITH_WEBDEV` (podman as `docker` and compose, and
+the `webdev` skill).
 `WITH_TORCH=1` adds CPU PyTorch, `transformers`, `accelerate` and
 `sentence-transformers` — left out by default because most evaluation here is
 API-side and it costs about a gigabyte. Also `RUST_VERSION=` (default `stable`)
@@ -559,7 +622,7 @@ file itself loaded as a scan and OpenCV aborting on an empty image.
 
 **What isn't here.** Geospatial (GDAL/PROJ/GEOS and `sf`), CUDA, and databases
 beyond SQLite and DuckDB. All are one `sudo apt-get install` away, and the apt
-cache is intact.
+cache is intact — or, for a database, one `docker run`.
 
 ---
 

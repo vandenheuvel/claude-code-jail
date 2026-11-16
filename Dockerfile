@@ -22,6 +22,7 @@
 #   WITH_LEAN=0      drop elan, lean-lsp-mcp, loogle and the lean skill (Mathlib
 #                    itself is a separate image, lean/Dockerfile, built by
 #                    `make lean`)
+#   WITH_WEBDEV=0    drop docker (rootless podman) and compose
 #   USER_UID/USER_GID  match your host account so bind mounts stay writable
 #
 # `node:26-slim` resolves to Debian 13 "trixie". Pinned explicitly: every apt
@@ -698,6 +699,74 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache-${TARGE
     apt-get update && $APT iproute2 lsof xxd postgresql-client \
  && command -v ip ss lsof xxd psql pg_dump >/dev/null
 
+# ---- webdev: containers -----------------------------------------------------
+# `docker` here is podman, rootless, running inside this container's own user
+# namespace: docker run / build / compose work, and so does anything speaking
+# the Docker API (testcontainers, the Docker SDKs), through the socket at
+# DOCKER_HOST that box-init has podman serve on first use. Nothing from the host
+# is mounted for it -- no host socket, which would hand a session the host --
+# and nothing it does can reach further than the container itself can.
+#
+# Four details make the nesting work, and each fails in a way that names
+# something else:
+#
+#   newuidmap and newgidmap get file capabilities instead of the setuid bit
+#   Debian ships them with. Writing a uid_map needs CAP_SYS_ADMIN over the new
+#   namespace; the user that created it has that, root in this container does
+#   not, and a setuid-root helper runs as root: "newuidmap: write to uid_map
+#   failed: Operation not permitted". With cap_setuid it keeps the caller's
+#   uid, and that is how Fedora ships them.
+#
+#   /etc/subuid gives the user every other uid the container has, 1-65535 less
+#   its own, so a nested container has 0-65534 -- 65534 being `nobody`, which
+#   images do use. A host account's subuid range has to cover them in turn,
+#   which the usual 65536 does.
+#
+#   The Makefile allows sethostname, setdomainname and setns through seccomp
+#   (see SECCOMPALLOW) and passes /dev/net/tun for pasta, and it gives podman's
+#   storage an anonymous volume per container (see NESTFLAGS for why).
+#
+#   compose_warning_logs: `docker compose` is podman running docker-compose
+#   against the socket, and announces it on every call otherwise. nodocker does
+#   the same for podman-docker's wrapper.
+#
+# And image names mean what they mean to docker. Debian's podman resolves a
+# short name only through its alias list, which knows `postgres` and `redis`
+# but not `bitnami/redis` or `myorg/app`, and fails the rest with
+# "short-name ... did not resolve to an alias and no unqualified-search
+# registries are defined". Docker Hub as the one search registry makes every
+# short name docker.io's, as in every compose file and README.
+#
+# And /var/run/docker.sock points at podman's socket in XDG_RUNTIME_DIR (set
+# further down), for the tools that never read DOCKER_HOST.
+ARG WITH_WEBDEV=1
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache-${TARGETARCH} \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked,id=apt-lists-${TARGETARCH} \
+    if [ "$WITH_WEBDEV" = "1" ]; then \
+      apt-get update && $APT \
+        podman podman-docker docker-compose crun conmon catatonit \
+        uidmap passt netavark aardvark-dns libcap2-bin \
+      && { if [ "$USER_UID" -lt 65536 ]; then \
+             printf '%s:1:%s\n%s:%s:%s\n' "$USERNAME" "$((USER_UID - 1))" \
+               "$USERNAME" "$((USER_UID + 1))" "$((65535 - USER_UID))"; \
+           else printf '%s:1:65535\n' "$USERNAME"; fi; } > /etc/subuid \
+      && cp /etc/subuid /etc/subgid \
+      && chmod 0755 /usr/bin/newuidmap /usr/bin/newgidmap \
+      && setcap cap_setuid=ep /usr/bin/newuidmap \
+      && setcap cap_setgid=ep /usr/bin/newgidmap \
+      && touch /etc/containers/nodocker \
+      && printf '[engine]\ncompose_warning_logs = false\n' > /etc/containers/containers.conf \
+      && printf 'unqualified-search-registries = ["docker.io"]\n' \
+           > /etc/containers/registries.conf.d/50-docker-hub.conf \
+      && { [ -e /usr/bin/docker-compose ] \
+           || ln -s /usr/libexec/docker/cli-plugins/docker-compose /usr/bin/docker-compose; } \
+      && ln -sf "/run/user/$USER_UID/podman/podman.sock" /run/docker.sock \
+      && install -d -o "$USER_UID" -g "$USER_GID" \
+           "/home/$USERNAME/.local" "/home/$USERNAME/.local/share" \
+           "/home/$USERNAME/.local/share/containers" \
+      && podman --version && docker-compose version; \
+    fi
+
 # ---- coding agents ----------------------------------------------------------
 # Claude Code and Codex, last and a layer each, because these are the layers
 # that change daily. ADD of the registry's `latest` metadata makes the published
@@ -869,19 +938,45 @@ RUN if [ "$WITH_RUST" = "1" ]; then \
       && chmod 0666 /opt/rust/cargo/config.toml; \
     fi
 
+# ---- the webdev skill -------------------------------------------------------
+# The webdev skill is how a session learns that docker and compose are already
+# here, rather than installing them. Like the lean skill it is on in every
+# session -- 136 characters of description, no process, no hook -- and it lives
+# in the managed-settings directory for the same reason.
+#
+# XDG_RUNTIME_DIR is set for every build, webdev or not, because podman is not
+# the only program that looks for it; DOCKER_HOST names podman's socket in it,
+# which box-init starts.
+ENV XDG_RUNTIME_DIR=/run/user/${USER_UID} \
+    DOCKER_HOST=unix:///run/user/${USER_UID}/podman/podman.sock
+RUN --mount=type=bind,source=webdev/SKILL.md,target=/tmp/webdev-SKILL.md \
+    install -d -m 0700 -o "$USER_UID" -g "$USER_GID" "$XDG_RUNTIME_DIR" \
+ && if [ "$WITH_WEBDEV" = "1" ]; then \
+      install -D -m 0644 /tmp/webdev-SKILL.md /etc/claude-code/.claude/skills/webdev/SKILL.md; \
+    fi
+
 # ---- entrypoint -------------------------------------------------------------
-# claude-start writes the image's defaults for Claude Code into the user
-# settings in the home volume, each only while it is unset there, and then
-# execs claude --dangerously-skip-permissions. The defaults: Remote Control in
-# every session, and the bypass-permissions warning taken as accepted. It comes
-# in after the agents, so that editing it rebuilds this layer and nothing else.
-RUN --mount=type=bind,source=claude-start,target=/tmp/claude-start \
-    install -m 0755 /tmp/claude-start /usr/local/bin/claude-start
+# Every container runs box-init first, whichever agent or shell it was started
+# for -- the Makefile's --entrypoint overrides name it too -- and box-init execs
+# the real command. What it sets up is what has to exist before anything in the
+# session might want it: today that is the Docker API socket, as a listener of
+# a few megabytes that becomes podman's service at the first connection.
+#
+# claude-start then writes the image's defaults for Claude Code into the user
+# settings in the home volume, each only while it is unset there, and execs
+# claude --dangerously-skip-permissions. The defaults: Remote Control in every
+# session, and the bypass-permissions warning taken as accepted.
+#
+# Both come in after the agents, so that editing either rebuilds this layer and
+# nothing else.
+RUN --mount=type=bind,source=box-init,target=/tmp/box-init \
+    --mount=type=bind,source=claude-start,target=/tmp/claude-start \
+    install -m 0755 /tmp/box-init /tmp/claude-start /usr/local/bin/
 
 LABEL org.opencontainers.image.title="Claude Code workstation" \
-      org.opencontainers.image.description="Claude Code and Codex with Rust, Python, R, Lean 4 and Mathlib, data analysis, scraping, LLM evaluation and a profiling/disassembly toolchain" \
+      org.opencontainers.image.description="Claude Code and Codex with Rust, Python, R, Lean 4 and Mathlib, data analysis, scraping, LLM evaluation, a profiling/disassembly toolchain, and docker" \
       org.opencontainers.image.base.name="docker.io/library/node:26-trixie-slim"
 
 USER $USERNAME
 WORKDIR /workspace
-ENTRYPOINT ["claude-start"]
+ENTRYPOINT ["box-init", "claude-start"]

@@ -307,6 +307,17 @@ TTYFLAGS := $(shell [ -t 0 ] && echo -it || echo -i)
 #   migrate_pages
 #   io_uring_*        ENOSYS, so io_uring code falls back to its slower path
 #                     and that is what gets measured
+#   sethostname,      containers inside the box (see NESTFLAGS): a nested
+#   setdomainname     container's own hostname, `crun: sethostname: Operation
+#                     not permitted` without it
+#   setns             podman joining the namespaces it has set up -- its user
+#                     namespace, a container for `podman exec`
+#
+# The last three are refused unless the container holds CAP_SYS_ADMIN, which
+# it does not, and which the kernel asks for again anyway: over the namespace
+# being renamed or joined. A process only holds that inside a user namespace
+# it created, so what they open up is the nested containers' own namespaces
+# and nothing of the container's or the host's.
 #
 # The profile does allow perf_event_open to a container holding CAP_PERFMON,
 # but adding the capability is no way back to it: podman hands an added
@@ -329,12 +340,33 @@ TTYFLAGS := $(shell [ -t 0 ] && echo -it || echo -i)
 #
 #   make SECCOMPFLAGS=
 SECCOMPALLOW := perf_event_open personality move_pages migrate_pages \
-                io_uring_setup io_uring_enter io_uring_register
+                io_uring_setup io_uring_enter io_uring_register \
+                sethostname setdomainname setns
 SECCOMPFILE  := $(if $(SECCOMPBASE),$(STAMPDIR)/seccomp.json)
 SECCOMPFLAGS ?= --security-opt seccomp='$(or $(SECCOMPFILE),unconfined)'
 
+# NESTFLAGS: what `docker` inside the box -- rootless podman, nested in the
+# container's user namespace (see the Dockerfile's webdev layer) -- needs from
+# the run, beyond the seccomp entries above.
+#
+# /dev/net/tun, because podman networks each nested container through pasta,
+# which makes a tap device in a network namespace of its own. The host's is
+# usable by any account; it reaches no namespace but the ones pasta creates.
+#
+# An anonymous volume for podman's storage, which --rm deletes with the
+# container. Overlay layers cannot be written onto the overlay the container
+# itself runs on, so the store needs a real filesystem, and it must be one no
+# other session writes to: podman keeps its containers' state in the store
+# beside the images, and a podman finding containers there that it did not
+# start since boot takes them for leftovers and resets them -- two sessions
+# sharing the home volume's store would each do that to the other's. So images
+# are pulled once per session, and anything a session wants to keep goes in a
+# bind mount.
+NESTFLAGS := $(if $(wildcard /dev/net/tun),--device /dev/net/tun) \
+             -v /home/claude/.local/share/containers
+
 RUN = $(SYNC) $(ENGINE) run --rm --init --pids-limit=-1 $(TTYFLAGS) \
-        --shm-size=1g $(USERNS) $(MASKFLAGS) $(SECCOMPFLAGS) \
+        --shm-size=1g $(USERNS) $(MASKFLAGS) $(SECCOMPFLAGS) $(NESTFLAGS) \
         -v "$(WORK)":"$(WDIR)" -w "$(WDIR)" \
         -v $(HOMEVOL):/home/claude \
         $(GITFLAGS) $(ENVFLAGS) $(RCFLAGS) $(NETFLAGS) $(LEANFLAGS) $(RUNARGS)
@@ -364,12 +396,14 @@ run: check-update home $(SECCOMPFILE)
 ## codex: Codex on $(WORK), in the same image and the same home volume
 # The image's ENTRYPOINT is Claude Code, so the second agent is an override of it
 # rather than a second image -- same mounts, same forwarded environment, same
-# /home/claude, so both agents' logins and history sit in the one volume.
+# /home/claude, so both agents' logins and history sit in the one volume. Every
+# override keeps box-init in front of its command, as the ENTRYPOINT has it, so
+# that each container gets the same set-up whatever it runs.
 # Codex sandboxes its own command execution and needs nothing here to do it
 # beyond the MASKFLAGS every target already gets: unlike `bench` this adds no
 # capability and relaxes the seccomp profile no further than every target does.
 codex: check-update home $(SECCOMPFILE)
-	$(RUN) --entrypoint codex $(REF) $(ARGS); $(TTYRESET)
+	$(RUN) --entrypoint box-init $(REF) codex $(ARGS); $(TTYRESET)
 
 ## lean: Claude Code on $(WORK) with the Lean tools on, after lean-init there
 # lean-init makes the directory a Lean project on the Lean image's prebuilt
@@ -378,7 +412,7 @@ codex: check-update home $(SECCOMPFILE)
 # them from then on, and every other directory never loads them. The first one
 # anywhere builds the Lean image.
 lean: lean-image check-update home $(SECCOMPFILE)
-	$(RUN) --entrypoint bash $(REF) -c 'lean-init && exec claude-start "$$@"' claude $(ARGS); $(TTYRESET)
+	$(RUN) --entrypoint box-init $(REF) bash -c 'lean-init && exec claude-start "$$@"' claude $(ARGS); $(TTYRESET)
 
 # The Lean image, built only when it is absent, as `image` is.
 lean-image:
@@ -476,10 +510,11 @@ build:
 slim: BUILDARGS += --build-arg WITH_LATEX=0 --build-arg WITH_GHIDRA=0 --build-arg WITH_BROWSERS=0
 slim: build
 
-## minimal: languages and core CLI only -- no LaTeX, R, browser, Quarto, Ghidra or Lean
+## minimal: languages and core CLI only -- no LaTeX, R, browser, Quarto, Ghidra, Lean or webdev
 minimal: BUILDARGS += --build-arg WITH_LATEX=0 --build-arg WITH_R=0 \
                       --build-arg WITH_BROWSERS=0 --build-arg WITH_QUARTO=0 \
-                      --build-arg WITH_GHIDRA=0 --build-arg WITH_LEAN=0
+                      --build-arg WITH_GHIDRA=0 --build-arg WITH_LEAN=0 \
+                      --build-arg WITH_WEBDEV=0
 minimal: build
 
 ## rebuild: build ignoring the layer cache
@@ -488,7 +523,7 @@ rebuild: build
 
 ## shell: bash in the image instead of either agent
 shell: check-update home $(SECCOMPFILE)
-	$(RUN) --entrypoint bash $(REF) $(ARGS); $(TTYRESET)
+	$(RUN) --entrypoint box-init $(REF) bash $(ARGS); $(TTYRESET)
 
 ## bench: shell that can also attach to running processes (py-spy dump, gdb -p)
 # Every target can already count and sample what it starts (see SECCOMPFLAGS).
@@ -529,7 +564,8 @@ versions: image
 	           "gh --version" "duckdb --version" "hyperfine --version" \
 	           "valgrind --version" "perf --version" "bwrap --version" \
 	           "chromium --version" "playwright --version" \
-	           "psql --version" "sccache --version" \
+	           "podman --version" "docker-compose version" "psql --version" \
+	           "sccache --version" \
 	           "lean --version" "lake --version" "lean-lsp-mcp --version"; do \
 	    printf "%-22s %s\n" "$${c%% *}" "$$($$c 2>&1 | head -n1)"; \
 	  done'

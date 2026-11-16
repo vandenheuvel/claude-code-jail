@@ -1,0 +1,32 @@
+#!/bin/sh
+# box-init COMMAND [ARGS...]
+#
+# What every container from this image runs first -- for Claude Code (through
+# claude-start), for Codex, for a shell -- before it execs COMMAND. The
+# image's ENTRYPOINT is `box-init claude-start`, and the Makefile's targets
+# that start something else pass --entrypoint box-init with their command.
+#
+# The Docker API socket. `docker` and `podman` on the command line need no
+# daemon, but `docker compose` and everything else that speaks the Docker API
+# -- testcontainers, the Docker SDKs, act -- connect to DOCKER_HOST and fail
+# at once when nothing is there. What serves it is `podman system service`,
+# about 90 MB while it runs. So it is not started here: systemd-socket-activate
+# binds the socket, a few megabytes waiting on it, and execs the service at the
+# first connection, handing it the socket. A session that never touches a
+# container never starts podman, and one that does finds the socket already in
+# place. The service's own output goes to service.log beside the socket.
+#
+# Only for the user XDG_RUNTIME_DIR belongs to; `--user root` gets none.
+# Nothing here may keep COMMAND from starting.
+sock="${XDG_RUNTIME_DIR:-/nonexistent}/podman/podman.sock"
+if [ -O "${XDG_RUNTIME_DIR:-/nonexistent}" ] && [ ! -S "$sock" ] \
+   && command -v podman >/dev/null 2>&1 \
+   && command -v systemd-socket-activate >/dev/null 2>&1; then
+  mkdir -p "${sock%/*}" \
+    && setsid -f systemd-socket-activate -l "$sock" \
+         podman system service --time=0 \
+         </dev/null >>"${sock%/*}/service.log" 2>&1 \
+    || :
+fi
+
+exec "$@"
