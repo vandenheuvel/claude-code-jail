@@ -227,14 +227,14 @@ make codex ARGS='-s workspace-write -a on-request'   # or keep its sandbox
 | **R** | 4.5 with ~70 prebuilt `r-cran-*` packages; Posit binary mirror configured for the rest |
 | **JS/TS** | node 26, `pnpm` `tsx` `typescript` `biome` `prettier` `vitest` |
 | **C/C++** | gcc and clang 19, cmake, ninja, `nasm` `yasm` |
-| **Data** | `numpy` `scipy` `pandas` `polars` `pyarrow` `duckdb` `statsmodels` `scikit-learn` `xgboost` `lightgbm` `lifelines` `scikit-survival`; `matplotlib` `seaborn` `plotly` `altair` `great-tables` and JupyterLab; `duckdb` `mlr` `sqlite3` `jq` `yq` at the command line |
+| **Data** | `numpy` `scipy` `pandas` `polars` `pyarrow` `duckdb` `statsmodels` `scikit-learn` `xgboost` `lightgbm` `lifelines` `scikit-survival`; `matplotlib` `seaborn` `plotly` `altair` `great-tables` and JupyterLab; `duckdb` `mlr` `sqlite3` `psql` `jq` `yq` at the command line |
 | **R packages** | survival analysis and resampling: `tidyverse` `data.table` `survival` `prodlim` `pec` `riskregression` `cmprsk` `timereg` `survminer` `survey` `quantreg` `glmnet` `ranger` `mgcv` `lme4` `Rcpp` `RcppArmadillo` `RcppEigen`; `testthat` `tinytest` `lintr` `covr` `bench` `microbenchmark` `profvis` |
 | **Scraping** | `httpx[http2]` `requests` `curl-cffi` `beautifulsoup4` `lxml` `selectolax` `parsel` `trafilatura` `feedparser` `scrapy` `pypdf` |
 | **Browsers** | Chromium on `PATH` plus chromedriver; Playwright for Python *and* for JS/TS, each with its Chromium already in `/opt/playwright`; `shot-scraper` `pytest-playwright` `selenium`; `xvfb` and CJK/emoji fonts |
 | **Lean** | Lean 4 via elan, the newest Mathlib release already built, the Lean REPL, `lean-lsp-mcp`, Loogle with its index of Mathlib, and the lean4-skills workflow; `lean-init` to start a project on it. Mathlib is a companion image that `make lean` builds. See [Lean proofs](#lean-proofs) |
 | **LLM eval** | `anthropic` `openai` `litellm` `tiktoken` `tokenizers` `huggingface-hub` `datasets`; harnesses `inspect-ai` (Python) and `promptfoo` (CLI) |
 | **Documents** | pandoc, Quarto, full TeX Live (`latexmk` `biber` `xetex` `luatex`), `latexdiff` and `latexdiff-vc` for marked-up revisions, graphviz, gnuplot, ghostscript, poppler, qpdf, ImageMagick, ffmpeg, librsvg; `auto-multiple-choice` for multiple-choice exams marked from scans |
-| **CLI** | `rg` `fd` `bat` `fzf` `delta` `gh` `git-lfs` `just` `direnv` `entr` `tmux` `parallel` `moreutils` `shellcheck` `shfmt` `ctags` `github-latest` `bwrap`, and passwordless `sudo` |
+| **CLI** | `rg` `fd` `bat` `fzf` `delta` `gh` `git-lfs` `just` `direnv` `entr` `tmux` `parallel` `moreutils` `shellcheck` `shfmt` `ctags` `github-latest` `bwrap` `ss` `ip` `lsof` `xxd`, and passwordless `sudo` |
 
 ---
 

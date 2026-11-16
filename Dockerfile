@@ -684,6 +684,20 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache-${TARGE
    && latexdiff --version; \
     fi
 
+# ---- ports, open files, bytes, psql -----------------------------------------
+# iproute2 is `ss` and `ip`: what is listening on :3000, and which addresses the
+# container has. lsof answers from the other end -- which process holds that
+# port, or that deleted file. xxd is the hex dump everyone expects next to vim,
+# which Debian packages separately. postgresql-client is psql, pg_dump and
+# pg_restore, beside sqlite3 and duckdb.
+#
+# A layer down here rather than words in the core CLI layer, for the reason
+# bubblewrap is one.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache-${TARGETARCH} \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked,id=apt-lists-${TARGETARCH} \
+    apt-get update && $APT iproute2 lsof xxd postgresql-client \
+ && command -v ip ss lsof xxd psql pg_dump >/dev/null
+
 # ---- coding agents ----------------------------------------------------------
 # Claude Code and Codex, last and a layer each, because these are the layers
 # that change daily. ADD of the registry's `latest` metadata makes the published
