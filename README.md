@@ -144,10 +144,14 @@ Claude Code's plugins do keep updating themselves (`FORCE_AUTOUPDATE_PLUGINS=1`)
 because they live in the home volume and the image never refreshes them.
 
 Claude Code's telemetry is off as well: the image sets `DISABLE_TELEMETRY`,
-`DISABLE_ERROR_REPORTING`, `CLAUDE_CODE_DISABLE_FEATURE_FLAGS` and
-`CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY`, so it sends no usage analytics or error
-reports, runs no A/B experiments, and never asks how a session went. Features
-Anthropic rolls out by flag stay at the release's defaults.
+`DISABLE_ERROR_REPORTING` and `CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY`, so it sends
+no usage analytics or error reports, fetches no feature flags and so runs no A/B
+experiments, and never asks how a session went. Features Anthropic rolls out by
+flag stay at the release's defaults. Remote Control (`/rc`) still works with a
+claude.ai subscription login: with telemetry off, Claude Code grants it on your
+plan rather than a flag. That is why `CLAUDE_CODE_DISABLE_FEATURE_FLAGS` is left
+unset — it would switch that off, and adds nothing while `DISABLE_TELEMETRY`
+already stops the flag fetch.
 
 Base is `node:26-trixie-slim` (Debian 13), building for `linux/amd64` and
 `linux/arm64`; see [Architecture notes](#architecture-notes) for the two things
