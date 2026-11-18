@@ -365,8 +365,55 @@ SECCOMPFLAGS ?= --security-opt seccomp='$(or $(SECCOMPFILE),unconfined)'
 NESTFLAGS := $(if $(wildcard /dev/net/tun),--device /dev/net/tun) \
              -v /home/claude/.local/share/containers
 
+# GPUFLAGS: the host's GPUs, whatever make they are, for the drivers the
+# image's GPU layer installs.
+#
+# Render nodes, not all of /dev/dri. A render node is the GPU for drawing,
+# compute and video, and every driver in the image goes through it; the card
+# node beside it is the display -- modesetting, for a screen a container does
+# not have. /dev/kfd is AMD's compute interface, which ROCm (a PyTorch ROCm
+# wheel, say) opens next to the render node. NVIDIA's own driver is reachable
+# through neither: its devices, and libraries matching the host's kernel
+# module, come from the NVIDIA Container Toolkit -- a CDI spec under podman,
+# `--gpus` under docker -- and are asked for when the host has it set up. A
+# host with no GPU gets no flags.
+#
+# Access stays the host account's. Where render nodes are 0666, as systemd
+# makes them on Arch, that is all it takes. A distribution keeping them 0660
+# for the render group leaves it to membership, and rootless podman drops the
+# host's groups: the container process has the container user's, and nothing
+# else -- the GPU is in /dev/dri and every open of it is EACCES. `--group-add
+# keep-groups` keeps them, and goes in when a node is reachable only that way.
+# crun honours it; runc ignores it without a word, so under runc make says so.
+# docker is root and has no such problem: it adds the nodes' groups by number.
+#
+# On for every session: a device costs nothing until something opens it, and
+# what it hands over is the GPU, not any of the host's files. The kernel's GPU
+# drivers do become attack surface, which is the same trade SECCOMPFLAGS makes.
+#
+#   make GPUFLAGS=        # no GPU for this session
+GPUNODES := $(wildcard /dev/dri/renderD* /dev/kfd)
+# The groups of the nodes not open to everyone. Each case pattern opens with a
+# parenthesis of its own, or its closing one would end the $(shell ...).
+GPUGIDS  := $(if $(GPUNODES),$(shell for n in $(GPUNODES); do \
+              case "$$(stat -Lc %A "$$n")" in (*rw?) ;; (*) stat -Lc %g "$$n" ;; esac; \
+            done | sort -u))
+ifeq ($(IS_PODMAN),podman)
+  GPUGROUPS := $(if $(filter $(GPUGIDS),$(shell id -G)),--group-add keep-groups)
+  GPUNVIDIA := $(if $(shell grep -ls 'nvidia\.com/gpu' /etc/cdi/* /var/run/cdi/* 2>/dev/null),--device nvidia.com/gpu=all)
+else
+  GPUGROUPS := $(foreach g,$(GPUGIDS),--group-add $(g))
+  GPUNVIDIA := $(if $(shell command -v nvidia-container-runtime-hook 2>/dev/null),--gpus all -e NVIDIA_DRIVER_CAPABILITIES=all)
+endif
+GPUFLAGS ?= $(foreach n,$(GPUNODES),--device $(n)) $(GPUGROUPS) $(GPUNVIDIA)
+ifneq ($(findstring keep-groups,$(GPUFLAGS)),)
+  ifneq ($(shell $(ENGINE) info --format '{{.Host.OCIRuntime.Name}}' 2>/dev/null),crun)
+    $(warning the GPU is reachable only through a group podman's runtime drops; for the GPU in the box, run podman on crun (runtime = "crun" in containers.conf))
+  endif
+endif
+
 RUN = $(SYNC) $(ENGINE) run --rm --init --pids-limit=-1 $(TTYFLAGS) \
-        --shm-size=1g $(USERNS) $(MASKFLAGS) $(SECCOMPFLAGS) $(NESTFLAGS) \
+        --shm-size=1g $(USERNS) $(MASKFLAGS) $(SECCOMPFLAGS) $(NESTFLAGS) $(GPUFLAGS) \
         -v "$(WORK)":"$(WDIR)" -w "$(WDIR)" \
         -v $(HOMEVOL):/home/claude \
         $(GITFLAGS) $(ENVFLAGS) $(RCFLAGS) $(NETFLAGS) $(LEANFLAGS) $(RUNARGS)

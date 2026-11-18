@@ -24,6 +24,8 @@
 #                    `make lean`)
 #   WITH_WEBDEV=0    drop docker (rootless podman) and compose, the PostgreSQL
 #                    server and pg-dev, and the Rust/wasm web tools
+#   WITH_GPU=0       drop the GPU drivers (Mesa, Intel's compute runtime, VA-API)
+#                    and the gpu skill
 #   USER_UID/USER_GID  match your host account so bind mounts stay writable
 #
 # `node:26-slim` resolves to Debian 13 "trixie". Pinned explicitly: every apt
@@ -815,6 +817,88 @@ RUN --mount=type=cache,target=/opt/rust/cargo/registry,sharing=locked,id=cargo-r
       && trunk --version && wasm-bindgen --version && sqlx --version; \
     fi
 
+# ---- GPU --------------------------------------------------------------------
+# Userspace drivers for whatever GPU the host has. The Makefile passes the host's
+# render nodes in (GPUFLAGS); this is the other half, without which a render
+# node is a device nothing in the image knows how to drive. By API:
+#
+#   OpenGL, EGL, Vulkan  Mesa: iris and ANV for Intel, radeonsi and RADV for AMD,
+#                        nouveau and NVK for NVIDIA without its own driver, and
+#                        llvmpipe and lavapipe on the CPU when there is no GPU.
+#                        eglinfo and vulkaninfo to see which; glslc, glslang and
+#                        spirv-tools to compile shaders (llama.cpp's Vulkan
+#                        backend builds with glslc).
+#   VA-API, QSV          video decode and encode for ffmpeg, GStreamer and
+#                        Chromium: iHD for Intel from Broadwell on, i965 for
+#                        older Intel, Mesa's driver for AMD, and the oneVPL
+#                        runtime behind ffmpeg's *_qsv codecs. vainfo lists what
+#                        the GPU can do.
+#   OpenCL, Level Zero   Intel's compute runtime (NEO) for Intel, Mesa's rusticl
+#                        for AMD; clinfo, and the loaders' -dev packages to link
+#                        against.
+#
+# Three details:
+#
+#   Intel's compute runtime is in Debian testing but not in trixie, so it comes
+#   from Intel's release: the .debs Intel builds for Ubuntu, plus the graphics
+#   compiler (IGC) that release's notes pair it with, which are read off the
+#   same page. Its checksum file covers its own .debs. Current releases support Gen12 on
+#   (Tiger Lake, Arc and later); Gen8-11 moved to a legacy1 branch that is not
+#   installed, and there rusticl can stand in (RUSTICL_ENABLE=iris).
+#
+#   iHD is Debian's non-free build, so this layer adds non-free to the apt
+#   sources, and every later layer and session sees it too. On Tiger Lake the
+#   free build has no AV1 or VC-1 decode and encodes only in low-power mode: 37
+#   entrypoints against 55.
+#
+#   Mesa's OpenCL package ships Clover beside rusticl. Clover is the old one,
+#   removed from Mesa since, and on an AMD GPU it would list the device a second
+#   time, so its ICD file goes. rusticl only serves the drivers RUSTICL_ENABLE
+#   names, and that is radeonsi: Intel has NEO, and NVIDIA's driver brings its
+#   own OpenCL.
+#
+# Most of the Intel half is amd64-only in Debian, as Intel's .debs are, so on
+# arm64 this is Mesa's half.
+ARG WITH_GPU=1
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache-${TARGETARCH} \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked,id=apt-lists-${TARGETARCH} \
+    if [ "$WITH_GPU" = "1" ]; then \
+      sed -i '/^Components:/{/non-free\( \|$\)/!s/$/ non-free/}' /etc/apt/sources.list.d/debian.sources; \
+      pkgs="mesa-vulkan-drivers libvulkan1 libvulkan-dev vulkan-tools \
+            glslc glslang-tools spirv-tools \
+            libgl1-mesa-dri libegl-mesa0 libegl1 libgles2 mesa-utils \
+            mesa-va-drivers vainfo \
+            mesa-opencl-icd ocl-icd-libopencl1 ocl-icd-opencl-dev clinfo"; \
+      mkdir -p /tmp/neo; \
+      if [ "$TARGETARCH" = "amd64" ]; then \
+        tag="$(github-latest tag intel/compute-runtime)"; \
+        rel="https://github.com/intel/compute-runtime/releases"; \
+        cd /tmp/neo; \
+        curl -fsSL --retry 3 "$rel/tag/$tag" \
+          | grep -oE 'https://github\.com/intel/(compute-runtime|intel-graphics-compiler)/releases/download/[^"<> ]+\.deb' \
+          | sort -u | xargs -n1 curl -fsSLO --retry 3; \
+        curl -fsSL --retry 3 "$rel/expanded_assets/$tag" \
+          | grep -oE "/intel/compute-runtime/releases/download/$tag/[^\"]+\.sum" \
+          | sed 's|^|https://github.com|' | xargs -n1 curl -fsSLO --retry 3; \
+        sha256sum -c --ignore-missing ./*.sum; \
+        ls intel-opencl-icd_*.deb libze-intel-gpu1_*.deb \
+           intel-igc-core-2_*.deb intel-igc-opencl-2_*.deb >/dev/null; \
+        cd /; \
+        pkgs="$pkgs intel-media-va-driver-non-free i965-va-driver \
+              libvpl2 libmfx-gen1.2 libze1 libze-dev $(echo /tmp/neo/*.deb)"; \
+      fi; \
+      apt-get update; \
+      $APT $pkgs; \
+      rm -rf /tmp/neo /etc/OpenCL/vendors/mesa.icd; \
+      command -v vulkaninfo eglinfo vainfo clinfo glslc >/dev/null; \
+      [ -e /etc/OpenCL/vendors/rusticl.icd ]; \
+      if [ "$TARGETARCH" = "amd64" ]; then \
+        [ -e /etc/OpenCL/vendors/intel.icd ]; \
+        ldconfig -p | grep libze_intel_gpu >/dev/null; \
+      fi; \
+    fi
+ENV RUSTICL_ENABLE=radeonsi
+
 # ---- coding agents ----------------------------------------------------------
 # Claude Code and Codex, last and a layer each, because these are the layers
 # that change daily. ADD of the registry's `latest` metadata makes the published
@@ -1016,6 +1100,16 @@ RUN --mount=type=bind,source=webdev/pg-dev,target=/tmp/pg-dev \
       && install -D -m 0644 /tmp/webdev-SKILL.md /etc/claude-code/.claude/skills/webdev/SKILL.md; \
     fi
 
+# The gpu skill tells a session that the drivers above are here, how to see
+# which GPU it has, and what to tell you when it has none, rather than have it
+# install drivers that cannot help: a container's GPU is whatever the run passed
+# in. On in every session, like the other two -- 180 characters of description,
+# no process, no hook.
+RUN --mount=type=bind,source=gpu/SKILL.md,target=/tmp/gpu-SKILL.md \
+    if [ "$WITH_GPU" = "1" ]; then \
+      install -D -m 0644 /tmp/gpu-SKILL.md /etc/claude-code/.claude/skills/gpu/SKILL.md; \
+    fi
+
 # ---- entrypoint -------------------------------------------------------------
 # Every container runs box-init first, whichever agent or shell it was started
 # for -- the Makefile's --entrypoint overrides name it too -- and box-init execs
@@ -1035,7 +1129,7 @@ RUN --mount=type=bind,source=box-init,target=/tmp/box-init \
     install -m 0755 /tmp/box-init /tmp/claude-start /usr/local/bin/
 
 LABEL org.opencontainers.image.title="Claude Code workstation" \
-      org.opencontainers.image.description="Claude Code and Codex with Rust, Python, R, Lean 4 and Mathlib, data analysis, scraping, LLM evaluation, a profiling/disassembly toolchain, and docker, PostgreSQL and the Rust web toolchain" \
+      org.opencontainers.image.description="Claude Code and Codex with Rust, Python, R, Lean 4 and Mathlib, data analysis, scraping, LLM evaluation, a profiling/disassembly toolchain, docker, PostgreSQL and the Rust web toolchain, and drivers for the host's GPU" \
       org.opencontainers.image.base.name="docker.io/library/node:26-trixie-slim"
 
 USER $USERNAME

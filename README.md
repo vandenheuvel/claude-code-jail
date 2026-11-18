@@ -75,7 +75,8 @@ crashing on real pages, in ways that don't name the cause. It also unmasks
 trade, and it is spelled out under
 [Two agents, one image](#two-agents-one-image). And it gives each container
 `/dev/net/tun` and a scratch volume, for the containers a session runs inside
-it (see [Containers and databases](#containers-and-databases)).
+it (see [Containers and databases](#containers-and-databases)), and the host's
+GPU, if it has one (see [GPU](#gpu)).
 
 Every Claude Code session in the box runs with `--dangerously-skip-permissions`:
 it never stops to ask before running a command or editing a file, since the
@@ -242,6 +243,7 @@ make codex ARGS='-s workspace-write -a on-request'   # or keep its sandbox
 | **Documents** | pandoc, Quarto, full TeX Live (`latexmk` `biber` `xetex` `luatex`), `latexdiff` and `latexdiff-vc` for marked-up revisions, graphviz, gnuplot, ghostscript, poppler, qpdf, ImageMagick, ffmpeg, librsvg; `auto-multiple-choice` for multiple-choice exams marked from scans |
 | **Containers** | `docker`, `docker compose` and `podman`: rootless podman nested in the box, with the Docker API socket for compose, testcontainers and the SDKs. See [Containers and databases](#containers-and-databases) |
 | **Web** | PostgreSQL 17 with pgvector, and `pg-dev` to keep one per project from session to session; for Rust, the `wasm32-unknown-unknown` target, `trunk` `cargo-leptos` `wasm-pack` `wasm-bindgen` `wasm-opt` `sqlx-cli` `cargo-generate` |
+| **GPU** | drivers for the host's GPU, passed in by `make`: Mesa for OpenGL, EGL and Vulkan (iris and ANV, radeonsi and RADV, nouveau and NVK); VA-API and QSV video (Intel's iHD, i965, Mesa; oneVPL); OpenCL and Level Zero (Intel's compute runtime, Mesa's rusticl); `vulkaninfo` `clinfo` `vainfo` `eglinfo` `glslc`. See [GPU](#gpu) |
 | **CLI** | `rg` `fd` `bat` `fzf` `delta` `gh` `git-lfs` `just` `direnv` `entr` `tmux` `parallel` `moreutils` `shellcheck` `shfmt` `ctags` `github-latest` `bwrap` `ss` `ip` `lsof` `xxd`, and passwordless `sudo` |
 
 ---
@@ -386,6 +388,76 @@ wasm-pack fetch the matching one themselves, and for anything else
 pg-dev rather than a throwaway postgres container and does not install Docker.
 Like the lean skill it is on in every session, at 187 characters of skill
 description, with no process and no hook.
+
+---
+
+## GPU
+
+Whatever GPU the host has, a session can use it: `make` passes the host's
+render nodes in, and the image has the drivers for them. On a laptop's Intel
+Iris Xe (Tiger Lake), for one:
+
+```sh
+vulkaninfo --summary      # Intel(R) Iris(R) Xe Graphics (TGL GT2), Mesa's ANV
+clinfo -l                 # Intel(R) OpenCL Graphics, Intel's compute runtime
+vainfo --display drm --device /dev/dri/renderD128   # 55 decode and encode entrypoints
+ffmpeg -vaapi_device /dev/dri/renderD128 -i in.mp4 \
+  -vf 'format=nv12,hwupload' -c:v h264_vaapi out.mp4
+```
+
+| | Intel | AMD | NVIDIA |
+|---|---|---|---|
+| OpenGL, EGL, Vulkan | Mesa: iris, ANV | Mesa: radeonsi, RADV | the host's driver, through the NVIDIA Container Toolkit; Mesa's nouveau and NVK without it |
+| Video: VA-API, QSV | iHD, non-free build (i965 before Broadwell); oneVPL for ffmpeg's `*_qsv` | Mesa | NVENC and NVDEC, through the toolkit |
+| OpenCL | Intel's compute runtime (NEO), Gen12 on | Mesa's rusticl | the host's driver, through the toolkit |
+| Level Zero | Intel's compute runtime | — | — |
+
+**Passing it in.** Every container gets the host's render nodes,
+`/dev/dri/renderD*`, and on an AMD host `/dev/kfd` beside them, which ROCm
+builds such as PyTorch's ROCm wheels open. Not the card nodes: those are the
+display, and a container has none. An NVIDIA GPU on NVIDIA's own driver needs
+the host's libraries as well, matched to its kernel module, and those come from
+the NVIDIA Container Toolkit: `--device nvidia.com/gpu=all` under podman, when
+the host has a CDI spec for it (`nvidia-ctk cdi generate`), and `--gpus all`
+under docker, when the toolkit's hook is installed. A host with no GPU gets
+none of this, and `make GPUFLAGS=` leaves the GPU out of a session.
+
+**Permissions.** Access stays the host account's. Where render nodes are
+`0666`, as systemd makes them on Arch, nothing more is needed. A distribution
+keeping them `0660` for the `render` group leaves access to membership, and
+rootless podman drops the host's supplementary groups: the device is there in
+the container and every open of it fails with `EACCES`. So when a node is
+reachable only through a group, `make` adds `--group-add keep-groups`, which
+podman's crun runtime honours. runc ignores it without a word, so under runc
+`make` warns instead. docker, being root, gets the nodes' groups by number.
+
+**Intel's compute runtime** — OpenCL and Level Zero — is in Debian testing but
+not in trixie, so it comes from Intel's own release, with the graphics compiler
+(IGC) that release names in its notes. Current releases cover Gen12 on: Tiger
+Lake, Alder Lake, Arc, Meteor Lake and later. Gen8–11 is on a legacy branch
+that is not installed; Mesa's rusticl covers those for OpenCL, as
+`RUSTICL_ENABLE=iris`. Like the rest of the toolchain, it moves at
+`make rebuild`. The video driver is Debian's non-free iHD, which is why the
+image has non-free in its apt sources: on Tiger Lake the free build has no AV1
+or VC-1 decode and only low-power encoding, 37 entrypoints against 55.
+
+**Browsers.** Headless Chromium draws WebGL on SwiftShader, on the CPU, unless
+it is told to use the GPU: `--use-angle=gl-egl`, or `--use-angle=vulkan
+--enable-features=Vulkan`, puts it on the host's GPU, for Debian's Chromium and
+both Playwrights alike (`p.chromium.launch(args=["--use-angle=gl-egl"])`).
+`--enable-gpu` is the flag that sounds right and is not: in headless mode it
+turns WebGL off altogether.
+
+**Not here.** GPU monitors: `intel_gpu_top` reads the i915 PMU, which the
+kernel opens only under a host `perf_event_paranoid` of 0 or less, and `nvtop`
+finds GPUs through udev's database, which a container does not have. Nor the
+CUDA, ROCm or oneAPI toolkits: large, and the wheels that use them bring their
+own runtimes and need only the devices above.
+
+**The gpu skill** tells a Claude Code session all of this, so that it checks
+which GPU it has rather than install drivers, and tells you when it has none.
+It is on in every session, at 180 characters of skill description, with no
+process and no hook.
 
 ---
 
@@ -556,7 +628,8 @@ depends on TeX Live and so also goes with `WITH_LATEX=0`), `WITH_LEAN` (elan,
 `lean-lsp-mcp`, `loogle` and the `lean` skill; Mathlib itself is the
 [Lean image](#lean-proofs)), `WITH_WEBDEV` (podman as `docker` and compose, the
 PostgreSQL server, `pg-dev` and the `webdev` skill, and the Rust web tools;
-`psql` stays).
+`psql` stays), `WITH_GPU` (Mesa, Intel's compute runtime and video drivers, and
+the `gpu` skill; `make GPUFLAGS=` is the run-time switch).
 `WITH_TORCH=1` adds CPU PyTorch, `transformers`, `accelerate` and
 `sentence-transformers` — left out by default because most evaluation here is
 API-side and it costs about a gigabyte. Also `RUST_VERSION=` (default `stable`)
@@ -662,8 +735,9 @@ One trap: the man page spells `analyse`'s scan-list option `--list-fichiers`,
 but only `--liste-fichiers` is accepted, and the misspelling ends with the list
 file itself loaded as a scan and OpenCV aborting on an empty image.
 
-**What isn't here.** Geospatial (GDAL/PROJ/GEOS and `sf`), CUDA, and databases
-beyond SQLite, DuckDB and PostgreSQL. All are one `sudo apt-get install` away,
+**What isn't here.** Geospatial (GDAL/PROJ/GEOS and `sf`), the CUDA toolkit
+(the GPU drivers are, see [GPU](#gpu)), and databases beyond SQLite, DuckDB and
+PostgreSQL. All are one `sudo apt-get install` away,
 and the apt cache is intact — or, for a database, one `docker run`.
 
 ---
@@ -763,8 +837,11 @@ grep -Ev '^#|%' /etc/resolv.conf | podman exec -i -u 0 <container> sh -c 'cat > 
 
 ## Architecture notes
 
-`linux/amd64` and `linux/arm64` both build. Two differences:
+`linux/amd64` and `linux/arm64` both build. Three differences:
 
 - `cpuid` and `likwid` are amd64-only in Debian and are skipped on arm64.
+- The Intel half of the GPU layer — iHD, i965, oneVPL, the compute runtime and
+  Level Zero — is amd64-only, in Debian and from Intel alike; arm64 gets Mesa's
+  half.
 - Posit's binary R packages and `scikit-survival`'s wheels are amd64-only; on
   arm64 both fall back to compiling from source.
